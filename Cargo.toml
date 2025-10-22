@@ -1,10 +1,8 @@
-cargo-features = ["edition2024"]  # edition 2024 is unstable for Cargo 1.75.0
 [package]
 name = "rns-mavlink"
 description = "Reticulum Mavlink bridge"
 version = "0.1.0"
 license = "MIT"
-edition = "2024"
 
 [dependencies]
 clap = { version= "4.*", features= ["derive"] }
