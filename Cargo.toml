@@ -8,13 +8,10 @@ license = "MIT"
 clap = { version = "=4.4.*", features= ["derive"] }
 env_logger = "0.11.*"
 log = "0.4.*"
+reticulum = "0.1.*"
 serde = { version = "1.*", features = ["derive"] }
 tokio-serial = "5.*"
 tokio = { version = "1.*", features = ["full"] }
 toml = "0.8.*"
 base64ct = "=1.7.*"  # base64ct 1.8 is incompatible with Rust 1.75.0 so we add this
                      # dependency to pin the version
-
-[dependencies.reticulum]
-git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs"
-version = "0.1.*"
