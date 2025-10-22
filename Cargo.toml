@@ -12,7 +12,12 @@ serde = { version = "1.*", features = ["derive"] }
 tokio-serial = "5.*"
 tokio = { version = "1.*", features = ["full"] }
 toml = "0.8.*"
+base64ct = "1.7.*"  # base64ct 1.8 is incompatible with Rust 1.75.0 so we add this
+                    # dependency so we can patch it with version 1.7.2 below
 
 [dependencies.reticulum]
 git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs"
 version = "0.1.*"
+
+[patch.crates-io]
+base64ct = { version = "=1.7.2", git = "https://github.com/RustCrypto/formats", tag = "base64ct/v1.7.2" }
