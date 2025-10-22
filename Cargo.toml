@@ -1,3 +1,4 @@
+cargo-features = ["edition2024"]  # edition 2024 is unstable for Cargo 1.75.0
 [package]
 name = "rns-mavlink"
 description = "Reticulum Mavlink bridge"
