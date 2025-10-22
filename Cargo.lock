@@ -1217,7 +1217,8 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 [[package]]
 name = "reticulum"
 version = "0.1.0"
-source = "git+https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs#9eaff0465b34e704ec9809c8479658e9d8c51561"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d838809ab28f9bfa5354b3397bcfc2b4a7a7258e98d9ed2b18a6e39437b00202"
 dependencies = [
  "aes",
  "cbc",
