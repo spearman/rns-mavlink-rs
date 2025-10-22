@@ -7,12 +7,12 @@ license = "MIT"
 [dependencies]
 clap = { version = "=4.4.*", features= ["derive"] }
 env_logger = "0.11.*"
-ed25519-dalek = "=2.1.*"
 log = "0.4.*"
 reticulum = "0.1.*"
 serde = { version = "1.*", features = ["derive"] }
 tokio-serial = "5.*"
 tokio = { version = "1.*", features = ["full"] }
 toml = "0.8.*"
-base64ct = "=1.7.*"  # base64ct 1.8 is incompatible with Rust 1.75.0 so we add this
-                     # dependency to pin the version
+# the following dependencies are here to pin versions to be compatible with Rust 1.75.0
+ed25519-dalek = "=2.1.*"
+base64ct = "=1.6.*"
