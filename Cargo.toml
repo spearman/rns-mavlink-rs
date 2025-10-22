@@ -14,5 +14,6 @@ tokio-serial = "5.*"
 tokio = { version = "1.*", features = ["full"] }
 toml = "0.8.*"
 # the following dependencies are here to pin versions to be compatible with Rust 1.75.0
-ed25519-dalek = "=2.1.*"
 base64ct = "=1.6.*"
+ed25519-dalek = "=2.1.*"
+indexmap = "=2.11.*"
