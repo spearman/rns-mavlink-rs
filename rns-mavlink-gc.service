@@ -1,9 +1,9 @@
 [Unit]
-Description=Reticulum Mavlink Flight Controller Daemon
+Description=Reticulum Mavlink Ground Control Daemon
 After=network.target
 
 [Service]
-ExecStart=stty -F /dev/ttySTM1 57600 && /usr/bin/rns-mavlink-fc -a http://127.0.0.1:8080
+ExecStart=/usr/bin/rns-mavlink-gc -a http://127.0.0.1:8080
 WorkingDirectory=/home/root/rns-mavlink
 User=root
 Group=root
