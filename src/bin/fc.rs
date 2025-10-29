@@ -1,5 +1,6 @@
 use clap::Parser;
 use log;
+use tokio::sync::mpsc;
 
 use reticulum::destination::{DestinationName, SingleInputDestination};
 use reticulum::identity::PrivateIdentity;
@@ -36,7 +37,8 @@ async fn main() {
     .default_filter_or(&config.log_level)).init();
   log::info!("fc start with RNS kaonic grpc address {}", cmd.address);
   // mavlink bridge
-  let fc = match rns_mavlink::Fc::new(config) {
+  let (tx, rx) = mpsc::channel(16);
+  let fc = match rns_mavlink::Fc::new(config, tx) {
     Ok(fc) => fc,
     Err(err) => {
       log::error!("error creating fc bridge: {:?}", err);
@@ -48,10 +50,11 @@ async fn main() {
   let id = PrivateIdentity::new_from_name("mavlink-rns-fc");
   let transport = Transport::new(TransportConfig::new("fc", &id, true));
   let _ = transport.iface_manager().lock().await.spawn(
-    KaonicGrpc::new(cmd.address, RadioConfig::new_for_module(RadioModule::RadioA), None),
+    KaonicGrpc::new(cmd.address, RadioConfig::new_for_module(RadioModule::RadioA),
+      Some(rx)),
     KaonicGrpc::spawn);
-  let destination =
-    SingleInputDestination::new(id, DestinationName::new("rns_mavlink", "fc"));
+  let destination = SingleInputDestination::new(id,
+    DestinationName::new("rns_mavlink", "fc"));
   log::info!("created destination: {}", destination.desc.address_hash);
   // run
   if let Err(err) = fc.run(transport).await {
