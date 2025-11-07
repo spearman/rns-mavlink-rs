@@ -21,7 +21,7 @@ pub struct FcConfig {
   pub serial_port: String,
   pub serial_baud: u32,
   // TODO: deserialize AddressHash
-  pub gc_destination: String,
+  pub gc_data_destination: String,
   // TODO: deserialize AddressHash
   pub gc_radio_config_destination: String
 }
@@ -47,7 +47,7 @@ impl Fc {
       Arc::new(tokio::sync::Mutex::new(None));
     let config_link: Arc<tokio::sync::Mutex<Option<Arc<tokio::sync::Mutex<Link>>>>> =
       Arc::new(tokio::sync::Mutex::new(None));
-    let gc_data_destination = AddressHash::new_from_hex_string(&self.config.gc_destination)
+    let gc_data_destination = AddressHash::new_from_hex_string(&self.config.gc_data_destination)
       .map_err(|err|{
         log::error!("error parsing ground control destination hash: {err:?}");
         FcError::RnsError(err)
