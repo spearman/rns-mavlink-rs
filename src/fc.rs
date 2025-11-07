@@ -43,11 +43,11 @@ impl Fc {
   pub async fn run(&self, transport: Transport) -> Result<(), FcError> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_serial::SerialPortBuilderExt;
-    let link: Arc<tokio::sync::Mutex<Option<Arc<tokio::sync::Mutex<Link>>>>> =
+    let data_link: Arc<tokio::sync::Mutex<Option<Arc<tokio::sync::Mutex<Link>>>>> =
       Arc::new(tokio::sync::Mutex::new(None));
     let config_link: Arc<tokio::sync::Mutex<Option<Arc<tokio::sync::Mutex<Link>>>>> =
       Arc::new(tokio::sync::Mutex::new(None));
-    let gc_destination = AddressHash::new_from_hex_string(&self.config.gc_destination)
+    let gc_data_destination = AddressHash::new_from_hex_string(&self.config.gc_destination)
       .map_err(|err|{
         log::error!("error parsing ground control destination hash: {err:?}");
         FcError::RnsError(err)
@@ -69,17 +69,23 @@ impl Fc {
       while let Ok(announce) = announce_recv.recv().await {
         let destination = announce.destination.lock().await;
         let address = destination.desc.address_hash;
-        if address == gc_destination {
-          *link.lock().await = Some(transport.link(destination.desc).await);
+        if address == gc_data_destination {
+          let mut data_link = data_link.lock().await;
+          if data_link.is_none() {
+            *data_link = Some(transport.link(destination.desc).await);
+          }
         } else if address == gc_config_destination {
-          *config_link.lock().await = Some(transport.link(destination.desc).await);
+          let mut config_link = config_link.lock().await;
+          if config_link.is_none() {
+            *config_link = Some(transport.link(destination.desc).await);
+          }
         }
       }
     };
     // read serial port and forward to links
     let mut read_port_loop = async || {
       loop {
-        if let Some(_link) = link.lock().await.as_ref() {
+        if let Some(_link) = data_link.lock().await.as_ref() {
           log::info!("reading from serial port {}...", self.config.serial_port);
           let mut buf = vec![0u8; 2usize.pow(16)];
           loop {
@@ -102,7 +108,7 @@ impl Fc {
     let mut link_event_loop = async || {
       let mut out_link_events = transport.out_link_events();
       while let Ok(link_event) = out_link_events.recv().await {
-        if link_event.address_hash == gc_destination {
+        if link_event.address_hash == gc_data_destination {
           // forward upstream link messages to serial port
           match link_event.event {
             LinkEvent::Data(payload) => {
@@ -120,7 +126,7 @@ impl Fc {
             }
             LinkEvent::Closed => {
               log::warn!("data link closed {}", link_event.id);
-              let _ = link.lock().await.take();
+              let _ = data_link.lock().await.take();
             }
           }
         } else if link_event.address_hash == gc_config_destination {
