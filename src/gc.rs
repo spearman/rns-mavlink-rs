@@ -13,11 +13,11 @@ use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
 pub struct Gc {
-  config: GcConfig
+  config: Config
 }
 
 #[derive(Deserialize)]
-pub struct GcConfig {
+pub struct Config {
   pub log_level: String,
   pub qgc_udp_address: std::net::SocketAddr,
   pub qgc_reply_port: u16,
@@ -27,17 +27,17 @@ pub struct GcConfig {
 }
 
 #[derive(Debug)]
-pub enum GcError {
+pub enum Error {
   IoError(std::io::Error)
 }
 
 impl Gc {
-  pub fn new(config: GcConfig) -> Self {
+  pub fn new(config: Config) -> Self {
     Gc { config }
   }
 
   pub async fn run(&self, mut transport: Transport, id: PrivateIdentity)
-    -> Result<(), GcError>
+    -> Result<(), Error>
   {
     let data_destination = transport.add_destination(id.clone(),
       DestinationName::new("rns_mavlink", "gc.mavlink_data")).await;
@@ -58,7 +58,7 @@ impl Gc {
     let config_link_id: Arc<tokio::sync::Mutex<Option<LinkId>>> =
       Arc::new(tokio::sync::Mutex::new(None));
     let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.qgc_reply_port))
-      .await.map_err(GcError::IoError)?;
+      .await.map_err(Error::IoError)?;
     // socket loop
     let socket_loop = async || {
       log::info!("listening for UDP packets on port {}...", self.config.qgc_reply_port);

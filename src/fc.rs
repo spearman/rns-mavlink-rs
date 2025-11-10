@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio;
 use tokio::time;
 use tokio::sync::mpsc;
@@ -10,37 +10,41 @@ use reticulum::iface::kaonic::{self, RadioConfig};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
+pub const CONFIG_PATH: &str = "Fc.toml";
+
 pub struct Fc {
-  config: FcConfig,
+  config: Config,
   radio_config_tx: mpsc::Sender<kaonic::RadioConfig>
 }
 
-#[derive(Deserialize)]
-pub struct FcConfig {
+#[derive(Deserialize, Serialize)]
+pub struct Config {
   pub log_level: String,
   pub serial_port: String,
   pub serial_baud: u32,
   // TODO: deserialize AddressHash
   pub gc_data_destination: String,
   // TODO: deserialize AddressHash
-  pub gc_radio_config_destination: String
+  pub gc_radio_config_destination: String,
+  /// This will be overwritten if Gc changes config
+  pub radio_config: RadioConfig
 }
 
 #[derive(Debug)]
-pub enum FcError {
+pub enum Error {
   SerialDeviceError(tokio_serial::Error),
   RnsError(reticulum::error::RnsError)
 }
 
 impl Fc {
-  pub fn new(config: FcConfig, radio_config_tx: mpsc::Sender<kaonic::RadioConfig>)
+  pub fn new(config: Config, radio_config_tx: mpsc::Sender<kaonic::RadioConfig>)
     -> Result<Self, ()>
   {
     let fc = Fc { config, radio_config_tx };
     Ok(fc)
   }
 
-  pub async fn run(&self, transport: Transport) -> Result<(), FcError> {
+  pub async fn run(&mut self, transport: Transport) -> Result<(), Error> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_serial::SerialPortBuilderExt;
     let data_link: Arc<tokio::sync::Mutex<Option<Arc<tokio::sync::Mutex<Link>>>>> =
@@ -50,17 +54,18 @@ impl Fc {
     let gc_data_destination = AddressHash::new_from_hex_string(&self.config.gc_data_destination)
       .map_err(|err|{
         log::error!("error parsing ground control destination hash: {err:?}");
-        FcError::RnsError(err)
+        Error::RnsError(err)
       })?;
     let gc_config_destination = AddressHash::new_from_hex_string(
       &self.config.gc_radio_config_destination
     ) .map_err(|err|{
         log::error!("error parsing ground control destination hash: {err:?}");
-        FcError::RnsError(err)
+        Error::RnsError(err)
       })?;
-    let port = tokio_serial::new(&self.config.serial_port, self.config.serial_baud)
+    let serial_port = self.config.serial_port.clone();
+    let port = tokio_serial::new(&serial_port, self.config.serial_baud)
       .open_native_async()
-      .map_err(FcError::SerialDeviceError)?;
+      .map_err(Error::SerialDeviceError)?;
     let (mut port_reader, mut port_writer) = tokio::io::split(port);
     // set up links
     let link_loop = async || {
@@ -86,7 +91,7 @@ impl Fc {
     let mut read_port_loop = async || {
       loop {
         if let Some(_link) = data_link.lock().await.as_ref() {
-          log::info!("reading from serial port {}...", self.config.serial_port);
+          log::info!("reading from serial port {}...", serial_port);
           let mut buf = vec![0u8; 2usize.pow(16)];
           loop {
             match port_reader.read(&mut buf).await {
@@ -123,6 +128,7 @@ impl Fc {
             }
             LinkEvent::Activated => {
               log::info!("data link activated {}", link_event.id);
+              debug_assert!(data_link.lock().await.is_some());
             }
             LinkEvent::Closed => {
               log::warn!("data link closed {}", link_event.id);
@@ -136,14 +142,40 @@ impl Fc {
               log::trace!("config link {} payload ({})", link_event.id, payload.len());
               match serde_json::from_slice::<RadioConfig>(payload.as_slice()) {
                 Ok(radio_config) => {
-                  match self.radio_config_tx.send(radio_config).await {
-                    Ok(()) => {}
-                    Err(err) => {
-                      log::error!("error sending radio config: {err}");
-                      break
+                  if radio_config == self.config.radio_config {
+                    log::info!("got gc radio config: matches current radio config");
+                  } else {
+                    log::info!("got gc radio config: updating radio config");
+                    self.config.radio_config = radio_config.clone();
+                    match self.radio_config_tx.send(radio_config).await {
+                      Ok(()) => {}
+                      Err(err) => {
+                        log::error!("error sending radio config: {err}");
+                        break
+                      }
+                    }
+                    // write config file
+                    let s = toml::to_string(&self.config).unwrap();
+                    match std::fs::write(CONFIG_PATH, &s) {
+                      Ok(_) => {}
+                      Err(err) => {
+                        log::error!("error writing config file: {err}");
+                        break
+                      }
+                    }
+                    // TODO: ack ?
+                    // pause to let config update take effect
+                    time::sleep(time::Duration::from_millis(500)).await;
+                    // the links will need to be re-created
+                    if let Some(link) = data_link.lock().await.take() {
+                      log::info!("closing data link");
+                      link.lock().await.close();
+                    }
+                    if let Some(link) = config_link.lock().await.take() {
+                      log::info!("closing config link");
+                      link.lock().await.close();
                     }
                   }
-                  // TODO: ack ?
                 }
                 Err(err) => {
                   log::error!("error deserializing radio config message: {err}");
@@ -153,6 +185,7 @@ impl Fc {
             }
             LinkEvent::Activated => {
               log::info!("config link activated {}", link_event.id);
+              debug_assert!(config_link.lock().await.is_some());
             }
             LinkEvent::Closed => {
               log::warn!("config link closed {}", link_event.id);

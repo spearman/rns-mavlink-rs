@@ -5,12 +5,9 @@ use tokio::sync::mpsc;
 use reticulum::destination::{DestinationName, SingleInputDestination};
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::kaonic::kaonic_grpc::KaonicGrpc;
-use reticulum::iface::kaonic::{RadioConfig, RadioModule};
 use reticulum::transport::{Transport, TransportConfig};
 
 use rns_mavlink;
-
-const CONFIG_PATH: &str = "Fc.toml";
 
 /// Command line arguments
 #[derive(Parser)]
@@ -25,20 +22,22 @@ async fn main() {
   // parse command line args
   let cmd = Command::parse();
   // load config
-  let config: rns_mavlink::FcConfig = {
+  let config: rns_mavlink::fc::Config = {
     use std::io::Read;
     let mut s = String::new();
-    let mut f = std::fs::File::open(CONFIG_PATH).unwrap();
+    let mut f = std::fs::File::open(rns_mavlink::fc::CONFIG_PATH).unwrap();
     assert!(f.read_to_string(&mut s).unwrap() > 0);
     toml::from_str(&s).unwrap()
   };
+
   // init logging
   env_logger::Builder::from_env(env_logger::Env::default()
     .default_filter_or(&config.log_level)).init();
   log::info!("fc start with RNS kaonic grpc address {}", cmd.address);
   // mavlink bridge
+  let radio_config = config.radio_config.clone();
   let (tx, rx) = mpsc::channel(16);
-  let fc = match rns_mavlink::Fc::new(config, tx) {
+  let mut fc = match rns_mavlink::Fc::new(config, tx) {
     Ok(fc) => fc,
     Err(err) => {
       log::error!("error creating fc bridge: {:?}", err);
@@ -50,8 +49,7 @@ async fn main() {
   let id = PrivateIdentity::new_from_name("mavlink-rns-fc");
   let transport = Transport::new(TransportConfig::new("fc", &id, true));
   let _ = transport.iface_manager().lock().await.spawn(
-    KaonicGrpc::new(cmd.address, RadioConfig::new_for_module(RadioModule::RadioA),
-      Some(rx)),
+    KaonicGrpc::new(cmd.address, radio_config, Some(rx)),
     KaonicGrpc::spawn);
   let destination = SingleInputDestination::new(id,
     DestinationName::new("rns_mavlink", "fc"));

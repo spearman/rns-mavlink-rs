@@ -6,7 +6,6 @@ use toml;
 
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::kaonic::kaonic_grpc::KaonicGrpc;
-use reticulum::iface::kaonic::{RadioConfig, RadioModule};
 use reticulum::transport::{Transport, TransportConfig};
 
 use rns_mavlink;
@@ -26,7 +25,7 @@ async fn main() {
   // parse command line args
   let cmd = Command::parse();
   // load config
-  let config: rns_mavlink::GcConfig = {
+  let config: rns_mavlink::gc::Config = {
     use std::io::Read;
     let mut s = String::new();
     let mut f = std::fs::File::open(CONFIG_PATH).unwrap();
@@ -38,13 +37,14 @@ async fn main() {
     .default_filter_or(&config.log_level)).init();
   log::info!("gc start with RNS Kaonic gRPC address {}", cmd.address);
   // mavlink bridge
+  let radio_config = config.radio_config.clone();
   let gc = rns_mavlink::Gc::new(config);
   // start reticulum
   log::info!("starting reticulum");
   let id = PrivateIdentity::new_from_name("mavlink-rns-gc");
   let transport = Transport::new(TransportConfig::new("gc", &id, true));
   let _ = transport.iface_manager().lock().await.spawn(
-    KaonicGrpc::new(cmd.address, RadioConfig::new_for_module(RadioModule::RadioA), None),
+    KaonicGrpc::new(cmd.address, radio_config, None),
     KaonicGrpc::spawn);
   if let Err(err) = gc.run(transport, id).await {
     log::error!("gc bridge exited with error: {:?}", err);

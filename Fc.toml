@@ -3,3 +3,17 @@ serial_port = "/dev/ttySTM1"
 serial_baud = 57600
 gc_data_destination = "32f0c4dc2a9f9bdee3897ccf82365bed"
 gc_radio_config_destination = "473762efed6c103c225aab977f25535b"
+
+[radio_config]
+module = 0
+freq = 869535
+channel = 11
+channel_spacing = 200
+tx_power = 10
+
+[radio_config.phy_config]
+type = "Ofdm"
+
+[radio_config.phy_config.data]
+mcs = 6
+opt = 0
