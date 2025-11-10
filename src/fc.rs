@@ -90,16 +90,22 @@ impl Fc {
     // read serial port and forward to links
     let mut read_port_loop = async || {
       loop {
-        if let Some(_link) = data_link.lock().await.as_ref() {
+        if let Some(link) = data_link.lock().await.as_ref() {
           log::info!("reading from serial port {}...", serial_port);
           let mut buf = vec![0u8; 2usize.pow(16)];
           loop {
             match port_reader.read(&mut buf).await {
               Ok(n) => {
                 log::trace!("read {n} bytes");
-
                 for data in buf[..n].chunks(reticulum::packet::PACKET_MDU / 2) {
-                  transport.send_to_all_out_links(data).await;
+                  let link = link.lock().await;
+                  match link.data_packet(data) {
+                    Ok(packet) => {
+                      drop(link); // drop to prevent deadlock
+                      transport.send_packet(packet).await;
+                    }
+                    Err(err) => log::error!("error creating data packet: {err:?}")
+                  }
                 }
               }
               Err(e) => log::error!("error reading serial port: {}", e)
