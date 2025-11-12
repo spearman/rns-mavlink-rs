@@ -47,22 +47,23 @@ impl Fc {
   pub async fn run(&mut self, transport: Transport) -> Result<(), Error> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_serial::SerialPortBuilderExt;
-    let data_link: Arc<tokio::sync::Mutex<Option<Arc<tokio::sync::Mutex<Link>>>>> =
-      Arc::new(tokio::sync::Mutex::new(None));
-    let config_link: Arc<tokio::sync::Mutex<Option<Arc<tokio::sync::Mutex<Link>>>>> =
-      Arc::new(tokio::sync::Mutex::new(None));
-    let gc_data_destination = AddressHash::new_from_hex_string(&self.config.gc_data_destination)
-      .map_err(|err|{
-        log::error!("error parsing ground control destination hash: {err:?}");
+    log::info!("running fc");
+    type MaybeLink = Arc<tokio::sync::Mutex<Option<Arc<tokio::sync::Mutex<Link>>>>>;
+    let data_link: MaybeLink = Arc::new(tokio::sync::Mutex::new(None));
+    let config_link: MaybeLink = Arc::new(tokio::sync::Mutex::new(None));
+    let parse_destination_hash = |hash, name|
+      AddressHash::new_from_hex_string(hash).map_err(|err|{
+        log::error!("error parsing ground control {name} destination hash: {err:?}");
         Error::RnsError(err)
-      })?;
-    let gc_config_destination = AddressHash::new_from_hex_string(
-      &self.config.gc_radio_config_destination
-    ) .map_err(|err|{
-        log::error!("error parsing ground control destination hash: {err:?}");
-        Error::RnsError(err)
-      })?;
+      });
+    let gc_data_destination =
+      parse_destination_hash(&self.config.gc_data_destination, "data")?;
+    let gc_config_destination =
+      parse_destination_hash(&self.config.gc_radio_config_destination, "radio config")?;
+    log::debug!("gc data destination: {gc_data_destination}");
+    log::debug!("gc radio config destination: {gc_config_destination}");
     let serial_port = self.config.serial_port.clone();
+    log::info!("opening serial port {serial_port}");
     let port = tokio_serial::new(&serial_port, self.config.serial_baud)
       .open_native_async()
       .map_err(Error::SerialDeviceError)?;
@@ -70,18 +71,21 @@ impl Fc {
     // set up links
     let link_loop = async || {
       let mut announce_recv = transport.recv_announces().await;
-      // TODO: continue looping after link is created?
       while let Ok(announce) = announce_recv.recv().await {
         let destination = announce.destination.lock().await;
         let address = destination.desc.address_hash;
         if address == gc_data_destination {
+          log::debug!("got gc data destination announce {address}");
           let mut data_link = data_link.lock().await;
           if data_link.is_none() {
+            log::info!("creating data link for {address}");
             *data_link = Some(transport.link(destination.desc).await);
           }
         } else if address == gc_config_destination {
+          log::debug!("got gc radio config destination announce {address}");
           let mut config_link = config_link.lock().await;
           if config_link.is_none() {
+            log::info!("creating radio config link for {address}");
             *config_link = Some(transport.link(destination.desc).await);
           }
         }
@@ -90,21 +94,26 @@ impl Fc {
     // read serial port and forward to links
     let mut read_port_loop = async || {
       loop {
-        if let Some(link) = data_link.lock().await.as_ref() {
-          log::info!("reading from serial port {}...", serial_port);
+        if data_link.lock().await.is_some() {
+          log::info!("reading from serial port {}", serial_port);
           let mut buf = vec![0u8; 2usize.pow(16)];
-          loop {
+          'read_loop: loop {
             match port_reader.read(&mut buf).await {
               Ok(n) => {
                 log::trace!("read {n} bytes");
                 for data in buf[..n].chunks(reticulum::packet::PACKET_MDU / 2) {
-                  let link = link.lock().await;
-                  match link.data_packet(data) {
-                    Ok(packet) => {
-                      drop(link); // drop to prevent deadlock
-                      transport.send_packet(packet).await;
+                  if let Some(link) = data_link.lock().await.as_ref() {
+                    let link = link.lock().await;
+                    match link.data_packet(data) {
+                      Ok(packet) => {
+                        drop(link); // drop before sending to prevent deadlock
+                        transport.send_packet(packet).await;
+                      }
+                      Err(err) => log::error!("error creating data packet: {err:?}")
                     }
-                    Err(err) => log::error!("error creating data packet: {err:?}")
+                  } else {
+                    log::info!("data link lost, waiting for link to be re-established");
+                    break 'read_loop
                   }
                 }
               }
@@ -119,6 +128,7 @@ impl Fc {
     let mut link_event_loop = async || {
       let mut out_link_events = transport.out_link_events();
       while let Ok(link_event) = out_link_events.recv().await {
+        log::trace!("got link event with address hash: {}", link_event.address_hash);
         if link_event.address_hash == gc_data_destination {
           // forward upstream link messages to serial port
           match link_event.event {
@@ -145,7 +155,8 @@ impl Fc {
           // handle radio config messages
           match link_event.event {
             LinkEvent::Data(payload) => {
-              log::trace!("config link {} payload ({})", link_event.id, payload.len());
+              log::trace!("radio config link {} payload ({})",
+                link_event.id, payload.len());
               match serde_json::from_slice::<RadioConfig>(payload.as_slice()) {
                 Ok(radio_config) => {
                   if radio_config == self.config.radio_config {
@@ -190,11 +201,11 @@ impl Fc {
               };
             }
             LinkEvent::Activated => {
-              log::info!("config link activated {}", link_event.id);
+              log::info!("radio config link activated {}", link_event.id);
               debug_assert!(config_link.lock().await.is_some());
             }
             LinkEvent::Closed => {
-              log::warn!("config link closed {}", link_event.id);
+              log::warn!("radio config link closed {}", link_event.id);
               let _ = config_link.lock().await.take();
             }
           }
