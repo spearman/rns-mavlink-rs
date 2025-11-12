@@ -39,14 +39,15 @@ impl Gc {
   pub async fn run(&self, mut transport: Transport, id: PrivateIdentity)
     -> Result<(), Error>
   {
+    log::info!("running gc");
     let data_destination = transport.add_destination(id.clone(),
       DestinationName::new("rns_mavlink", "gc.mavlink_data")).await;
     let data_destination_hash = data_destination.lock().await.desc.address_hash;
-    log::info!("created data destination: {}", data_destination_hash);
+    log::info!("created data destination: {data_destination_hash}");
     let config_destination = transport.add_destination(id.clone(),
       DestinationName::new("rns_mavlink", "gc.radio_config")).await;
     let config_destination_hash = config_destination.lock().await.desc.address_hash;
-    log::info!("created radio config destination: {}", config_destination_hash);
+    log::info!("created radio config destination: {config_destination_hash}");
     // send announces
     let announce_loop = async || loop {
       transport.send_announce(&data_destination, None).await;
@@ -57,11 +58,13 @@ impl Gc {
       Arc::new(tokio::sync::Mutex::new(None));
     let config_link_id: Arc<tokio::sync::Mutex<Option<LinkId>>> =
       Arc::new(tokio::sync::Mutex::new(None));
+    log::info!("creating QGroundControl UDP reply socket for port {}",
+      self.config.qgc_reply_port);
     let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.qgc_reply_port))
       .await.map_err(Error::IoError)?;
     // socket loop
     let socket_loop = async || {
-      log::info!("listening for UDP packets on port {}...", self.config.qgc_reply_port);
+      log::info!("listening for UDP packets on port {}", self.config.qgc_reply_port);
       let mut buf = vec![0u8; 1024];
       loop {
         match socket.recv_from(&mut buf).await {
@@ -106,57 +109,63 @@ impl Gc {
       let target = self.config.qgc_udp_address;
       loop {
         match in_link_events.recv().await {
-          Ok(link_event) => if link_event.address_hash == data_destination_hash {
-            match link_event.event {
-              LinkEvent::Data(payload) => {
-                log::trace!("data link {} payload ({})", link_event.id, payload.len());
-                match socket.send_to(payload.as_slice(), target).await {
-                  Ok(n) => log::trace!("socket sent {n} bytes"),
-                  Err(err) => {
-                    log::error!("socket error sending bytes: {err:?}");
-                    break
-                  }
-                }
-              }
-              LinkEvent::Activated => {
-                log::info!("data link activated {}", link_event.id);
-                let mut link_id = link_id.lock().await;
-                *link_id = Some(link_event.id);
-              }
-              LinkEvent::Closed => {
-                log::warn!("data link closed {}", link_event.id);
-                let _ = link_id.lock().await.take();
-              }
-            }
-          } else if link_event.address_hash == config_destination_hash {
-            match link_event.event {
-              LinkEvent::Data(payload) => {
-                log::trace!("config link {} payload ({})", link_event.id, payload.len());
-                log::error!("TODO: handle config link reply");
-                unimplemented!("TODO: handle config link reply")
-              }
-              LinkEvent::Activated => {
-                log::info!("config link activated {}", link_event.id);
-                let mut config_link_id = config_link_id.lock().await;
-                *config_link_id = Some(link_event.id);
-                // send config
-                let config = serde_json::to_vec(&self.config.radio_config).unwrap();
-                if let Some(link) = transport.find_in_link(&link_event.id).await {
-                  let link = link.lock().await;
-                  match link.data_packet(config.as_slice()) {
-                    Ok(packet) => {
-                      drop(link); // drop to prevent deadlock
-                      transport.send_packet(packet).await;
+          Ok(link_event) => {
+            log::trace!("got in link event with address hash: {}",
+              link_event.address_hash);
+            if link_event.address_hash == data_destination_hash {
+              match link_event.event {
+                LinkEvent::Data(payload) => {
+                  log::trace!("data link {} payload ({})", link_event.id, payload.len());
+                  match socket.send_to(payload.as_slice(), target).await {
+                    Ok(n) => log::trace!("socket sent {n} bytes"),
+                    Err(err) => {
+                      log::error!("socket error sending bytes: {err:?}");
+                      break
                     }
-                    Err(err) => log::error!("error creating config packet: {err:?}")
                   }
-                } else {
-                  log::error!("could not find config link ({})", link_event.id)
+                }
+                LinkEvent::Activated => {
+                  log::info!("data link activated {}", link_event.id);
+                  let mut link_id = link_id.lock().await;
+                  *link_id = Some(link_event.id);
+                }
+                LinkEvent::Closed => {
+                  log::info!("data link closed {}", link_event.id);
+                  let _ = link_id.lock().await.take();
                 }
               }
-              LinkEvent::Closed => {
-                log::warn!("config link closed {}", link_event.id);
-                let _ = config_link_id.lock().await.take();
+            } else if link_event.address_hash == config_destination_hash {
+              match link_event.event {
+                LinkEvent::Data(payload) => {
+                  log::trace!("config link {} payload ({})", link_event.id, payload.len());
+                  // current implementation does not expect to receive data on this link
+                  log::error!("TODO: handle config link replies");
+                  unimplemented!("TODO: handle config link replies")
+                }
+                LinkEvent::Activated => {
+                  log::info!("config link activated {}", link_event.id);
+                  let mut config_link_id = config_link_id.lock().await;
+                  *config_link_id = Some(link_event.id);
+                  // send config
+                  let config = serde_json::to_vec(&self.config.radio_config).unwrap();
+                  if let Some(link) = transport.find_in_link(&link_event.id).await {
+                    let link = link.lock().await;
+                    match link.data_packet(config.as_slice()) {
+                      Ok(packet) => {
+                        drop(link); // drop to prevent deadlock
+                        log::info!("sending radio config");
+                        transport.send_packet(packet).await;
+                      }
+                      Err(err) => log::error!("error creating config packet: {err:?}")
+                    }
+                  } else {
+                    log::error!("could not find config link ({})", link_event.id)
+                  }
+                }
+                LinkEvent::Closed => {
+                  log::info!("config link closed {}", link_event.id);
+                  let _ = config_link_id.lock().await.take();
+                }
               }
             }
           }

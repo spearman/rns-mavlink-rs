@@ -128,7 +128,7 @@ impl Fc {
     let mut link_event_loop = async || {
       let mut out_link_events = transport.out_link_events();
       while let Ok(link_event) = out_link_events.recv().await {
-        log::trace!("got link event with address hash: {}", link_event.address_hash);
+        log::trace!("got out link event with address hash: {}", link_event.address_hash);
         if link_event.address_hash == gc_data_destination {
           // forward upstream link messages to serial port
           match link_event.event {
