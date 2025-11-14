@@ -19,8 +19,8 @@ pub struct Gc {
 #[derive(Deserialize)]
 pub struct Config {
   pub log_level: String,
-  pub qgc_udp_address: std::net::SocketAddr,
-  pub qgc_reply_port: u16,
+  pub gc_udp_address: std::net::SocketAddr,
+  pub gc_reply_port: u16,
   // TODO: deserialize AddressHash
   pub fc_destination: String,
   pub radio_config: RadioConfig
@@ -58,13 +58,13 @@ impl Gc {
       Arc::new(tokio::sync::Mutex::new(None));
     let config_link_id: Arc<tokio::sync::Mutex<Option<LinkId>>> =
       Arc::new(tokio::sync::Mutex::new(None));
-    log::info!("creating QGroundControl UDP reply socket for port {}",
-      self.config.qgc_reply_port);
-    let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.qgc_reply_port))
+    log::info!("creating ground control UDP reply socket for port {}",
+      self.config.gc_reply_port);
+    let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.gc_reply_port))
       .await.map_err(Error::IoError)?;
     // socket loop
     let socket_loop = async || {
-      log::info!("listening for UDP packets on port {}", self.config.qgc_reply_port);
+      log::info!("listening for UDP packets on port {}", self.config.gc_reply_port);
       let mut buf = vec![0u8; 1024];
       loop {
         match socket.recv_from(&mut buf).await {
@@ -106,7 +106,7 @@ impl Gc {
           }
         };
       let mut in_link_events = transport.in_link_events();
-      let target = self.config.qgc_udp_address;
+      let target = self.config.gc_udp_address;
       loop {
         match in_link_events.recv().await {
           Ok(link_event) => {

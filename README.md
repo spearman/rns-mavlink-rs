@@ -2,8 +2,8 @@
 
 > Reticulum-Mavlink bridge
 
-Bridges a flight controller connectd via serial port to a QGroundControl ground station
-over Reticulum mesh network.
+Bridges a flight controller connectd via serial port to a ground station over Reticulum
+mesh network.
 
 ## Building and running
 
@@ -17,15 +17,16 @@ cargo run --bin gc -- -p 4242 -f 127.0.0.1:4243
 cargo run --bin fc -- -p 4243 -f 127.0.0.1:4242
 ```
 
-Additional configuration such as serial device and QGroundControl ports are set in
+Additional configuration such as serial device and ground control ports are set in
 `Gc.toml` and `Fc.toml` config files.
 
-The `gc` application runs on a system that can communicate with QGroundControl via UDP
-(either locally or over internet). Configuration is as follows:
+The `gc` application runs on a system that can communicate with ground station software
+(QGroundControl, MissionPlanner) via UDP (either locally or over internet).
+Configuration is as follows:
 
-- `qgc_udp_address` -- UDP address:port where QGroundControl is reachable, example:
-  `"127.0.0.1:14550"`
-- `qgc_reply_port` -- local UDP port where QGroundControl will send replies, example:
+- `gc_udp_address` -- UDP address:port where ground station application is reachable,
+  example: `"127.0.0.1:14550"`
+- `gc_reply_port` -- local UDP port where ground station will send replies, example:
   `9999`
 - `fc_destination` -- Reticulum address hash of the fc node, example:
   `"db332f13541eb2e4b47d02923fbbcb9a"`
