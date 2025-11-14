@@ -1,3 +1,4 @@
+use std::net;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -19,7 +20,7 @@ pub struct Gc {
 #[derive(Deserialize)]
 pub struct Config {
   pub log_level: String,
-  pub gc_udp_address: std::net::SocketAddr,
+  pub gc_udp_port: u16,
   pub gc_reply_port: u16,
   // TODO: deserialize AddressHash
   pub fc_destination: String,
@@ -62,6 +63,31 @@ impl Gc {
       self.config.gc_reply_port);
     let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.gc_reply_port))
       .await.map_err(Error::IoError)?;
+    // search for ground station on network at gc_udp_port
+    // TODO: would be nice to use mdns here but mdns crate didn't seem to work
+    // TODO: after the ground station is found the address will be set until the service
+    // restarts, can we detect disconnection and change of address ?
+    log::info!("searching for ground station on network at port {}",
+      self.config.gc_udp_port);
+    let mut n = 2;
+    let mut buf = vec![0; 64];
+    let ground_station_address = loop {
+      // TODO: make the subnet we are iterating over configurable
+      let address = net::SocketAddrV4::new(
+        net::Ipv4Addr::new(192, 168, 10, n), self.config.gc_udp_port);
+      socket.send_to(b"", address).await.map_err(Error::IoError)?;
+      println!("N: {n}");
+      if let Ok(Ok((_, peer))) = tokio::time::timeout(
+        time::Duration::from_millis(50), socket.recv_from(&mut buf[..])
+      ).await {
+        log::info!("got ground station reply from {peer}");
+        break peer
+      }
+      n += 1;
+      if n == 255 {
+        n = 2;
+      }
+    };
     // socket loop
     let socket_loop = async || {
       log::info!("listening for UDP packets on port {}", self.config.gc_reply_port);
@@ -106,7 +132,7 @@ impl Gc {
           }
         };
       let mut in_link_events = transport.in_link_events();
-      let target = self.config.gc_udp_address;
+      let target = ground_station_address;
       loop {
         match in_link_events.recv().await {
           Ok(link_event) => {
