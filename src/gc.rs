@@ -76,7 +76,6 @@ impl Gc {
       let address = net::SocketAddrV4::new(
         net::Ipv4Addr::new(192, 168, 10, n), self.config.gc_udp_port);
       socket.send_to(b"", address).await.map_err(Error::IoError)?;
-      println!("N: {n}");
       if let Ok(Ok((_, peer))) = tokio::time::timeout(
         time::Duration::from_millis(50), socket.recv_from(&mut buf[..])
       ).await {
