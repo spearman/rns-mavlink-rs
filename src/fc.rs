@@ -102,14 +102,20 @@ impl Fc {
               Ok(n) => {
                 log::trace!("read {n} bytes");
                 for data in buf[..n].chunks(reticulum::packet::PACKET_MDU / 2) {
-                  if let Some(link) = data_link.lock().await.as_ref() {
-                    let link = link.lock().await;
+                  let mut lock = data_link.lock().await;
+                  if let Some(link_mutex) = lock.take() {
+                    let mut link = link_mutex.lock().await;
                     match link.data_packet(data) {
                       Ok(packet) => {
                         drop(link); // drop before sending to prevent deadlock
                         transport.send_packet(packet).await;
+                        *lock = Some(link_mutex);
                       }
-                      Err(err) => log::error!("error creating data packet: {err:?}")
+                      Err(err) => {
+                        log::error!("error creating data packet: {err:?}");
+                        link.close();
+                        break 'read_loop
+                      }
                     }
                   } else {
                     log::info!("data link lost, waiting for link to be re-established");
