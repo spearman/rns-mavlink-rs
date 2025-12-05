@@ -13,8 +13,11 @@ use reticulum::iface::kaonic::RadioConfig;
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
+use crate::MavlinkBuffer;
+
 pub struct Gc {
-  config: Config
+  config: Config,
+  mavlink_buffer: Arc<tokio::sync::Mutex<MavlinkBuffer>>
 }
 
 #[derive(Deserialize)]
@@ -34,7 +37,8 @@ pub enum Error {
 
 impl Gc {
   pub fn new(config: Config) -> Self {
-    Gc { config }
+    let mavlink_buffer = Arc::new(tokio::sync::Mutex::new(MavlinkBuffer::new()));
+    Gc { config, mavlink_buffer }
   }
 
   pub async fn run(&self, mut transport: Transport, id: PrivateIdentity)
@@ -87,9 +91,10 @@ impl Gc {
         n = 2;
       }
     };
-    // socket loop
+    // listen for packets from ground control station
     let socket_loop = async || {
-      log::info!("listening for UDP packets on port {}", self.config.gc_reply_port);
+      log::info!("listening for UDP packets on port {}",
+        socket.local_addr().unwrap().port());
       let mut buf = vec![0u8; 1024];
       loop {
         match socket.recv_from(&mut buf).await {
@@ -101,26 +106,33 @@ impl Gc {
             }
             let link_id = link_id.lock().await;
             if let Some(link_id) = link_id.as_ref() {
-              log::trace!("sending on link ({})", link_id);
               if let Some(link) = transport.find_in_link(link_id).await {
                 let link = link.lock().await;
-                match link.data_packet(data) {
-                  Ok(packet) => {
-                    drop(link); // drop to prevent deadlock
-                    transport.send_packet(packet).await;
+                let seqnum = self.mavlink_buffer.lock().await.push(data.to_vec());
+                log::trace!("enqueued seqnum {seqnum}");
+                let mavlink_buffer = self.mavlink_buffer.lock().await;
+                if mavlink_buffer.len() == 1 {
+                  if let Some((seqnum, payload)) = mavlink_buffer.last() {
+                    log::trace!("sending seq[{seqnum}] on link ({link_id})");
+                    match link.data_packet(&payload[..]) {
+                      Ok(packet) => {
+                        drop(link); // drop to prevent deadlock
+                        transport.send_packet(packet).await;
+                      }
+                      Err(err) => log::error!("error creating data packet: {err:?}")
+                    }
                   }
-                  Err(err) => log::error!("error creating data packet: {err:?}")
                 }
               } else {
                 log::error!("could not find in link ({link_id})")
               }
             }
           }
-          Err(e) => log::error!("error receiving packet: {}", e)
+          Err(e) => log::error!("error receiving packet: {e}")
         }
       }
     };
-    // upstream link data
+    // receive upstream link data
     let link_event_loop = async || {
       let _fc_destination =
         match AddressHash::new_from_hex_string(&self.config.fc_destination) {
@@ -141,12 +153,34 @@ impl Gc {
               match link_event.event {
                 LinkEvent::Data(payload) => {
                   log::trace!("data link {} payload ({})", link_event.id, payload.len());
-                  match socket.send_to(payload.as_slice(), target).await {
-                    Ok(n) => log::trace!("socket sent {n} bytes"),
-                    Err(err) => {
-                      log::error!("socket error sending bytes: {err:?}");
-                      break
+                  let seqnum =
+                    i64::from_be_bytes(payload.as_slice()[0..8].try_into().unwrap());
+                  if seqnum >= 0 {
+                    // data packet
+                    match socket.send_to(&payload.as_slice()[8..], target).await {
+                      Ok(n) => log::trace!("socket sent {n} bytes"),
+                      Err(err) => {
+                        log::error!("socket error sending bytes: {err:?}");
+                        break
+                      }
                     }
+                    // ack
+                    if let Some(link) = transport.find_in_link(&link_event.id).await {
+                      let link = link.lock().await;
+                      let seqnum = -(seqnum as i64);
+                      match link.data_packet(&seqnum.to_be_bytes()[..]) {
+                        Ok(packet) => {
+                          drop(link); // drop to prevent deadlock
+                          transport.send_packet(packet).await;
+                        }
+                        Err(err) => log::error!("error creating ack packet: {err:?}")
+                      }
+                    } else {
+                      log::error!("could not find link for ack")
+                    }
+                  } else {
+                    let seqnum = seqnum.abs() as u64;
+                    self.mavlink_buffer.lock().await.ack(seqnum);
                   }
                 }
                 LinkEvent::Activated => {
@@ -206,7 +240,7 @@ impl Gc {
     };
     tokio::select!{
       _ = announce_loop() => log::info!("announce loop exited: shutting down"),
-      _ = socket_loop() => log::info!("tun loop exited: shutting down"),
+      _ = socket_loop() => log::info!("socket loop exited: shutting down"),
       _ = link_event_loop() => log::info!("link event loop exited: shutting down"),
       _ = tokio::signal::ctrl_c() => log::info!("got ctrl-c: shutting down")
     }

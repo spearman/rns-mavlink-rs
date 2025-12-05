@@ -10,11 +10,14 @@ use reticulum::iface::kaonic::{self, RadioConfig};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
+use crate::MavlinkBuffer;
+
 pub const CONFIG_PATH: &str = "Fc.toml";
 
 pub struct Fc {
   config: Config,
-  radio_config_tx: mpsc::Sender<kaonic::RadioConfig>
+  radio_config_tx: mpsc::Sender<kaonic::RadioConfig>,
+  mavlink_buffer: MavlinkBuffer
 }
 
 #[derive(Deserialize, Serialize)]
@@ -40,7 +43,8 @@ impl Fc {
   pub fn new(config: Config, radio_config_tx: mpsc::Sender<kaonic::RadioConfig>)
     -> Result<Self, ()>
   {
-    let fc = Fc { config, radio_config_tx };
+    let mavlink_buffer = MavlinkBuffer::new();
+    let fc = Fc { config, radio_config_tx, mavlink_buffer };
     Ok(fc)
   }
 
