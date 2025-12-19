@@ -250,7 +250,7 @@ impl Gc {
       loop {
         let link_id_guard = data_link_id.lock().await;
         if let Some(link_id) = link_id_guard.as_ref() {
-          let rtt = if self.mavlink_buffer.lock().await.buffer().is_empty() {
+          let sleep_for = if self.mavlink_buffer.lock().await.buffer().is_empty() {
             // no messages to re-transmit
             default_sleep
           } else if let Some(link) = transport.find_in_link(link_id).await {
@@ -279,7 +279,7 @@ impl Gc {
             default_sleep
           };
           drop(link_id_guard);
-          time::sleep(rtt).await;
+          time::sleep(sleep_for).await;
         } else {
           drop(link_id_guard);
           time::sleep(default_sleep).await;

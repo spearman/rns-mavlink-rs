@@ -10,14 +10,14 @@ use reticulum::iface::kaonic::{self, RadioConfig};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
-use crate::MavlinkBuffer;
+use crate::{MavlinkBuffer, Seqnum};
 
 pub const CONFIG_PATH: &str = "Fc.toml";
 
 pub struct Fc {
   config: Config,
   radio_config_tx: mpsc::Sender<kaonic::RadioConfig>,
-  mavlink_buffer: MavlinkBuffer
+  mavlink_buffer: Arc<tokio::sync::Mutex<MavlinkBuffer>>
 }
 
 #[derive(Deserialize, Serialize)]
@@ -43,7 +43,7 @@ impl Fc {
   pub fn new(config: Config, radio_config_tx: mpsc::Sender<kaonic::RadioConfig>)
     -> Result<Self, ()>
   {
-    let mavlink_buffer = MavlinkBuffer::new();
+    let mavlink_buffer = Arc::new(tokio::sync::Mutex::new(MavlinkBuffer::new()));
     let fc = Fc { config, radio_config_tx, mavlink_buffer };
     Ok(fc)
   }
@@ -109,7 +109,10 @@ impl Fc {
                   let mut lock = data_link.lock().await;
                   if let Some(link_mutex) = lock.take() {
                     let mut link = link_mutex.lock().await;
-                    match link.data_packet(data) {
+                    let (seqnum, payload) = self.mavlink_buffer.lock().await
+                      .push(data.to_vec());
+                    log::trace!("sending seq[{}] on link ({})", seqnum.0, link.id());
+                    match link.data_packet(&payload[..]) {
                       Ok(packet) => {
                         drop(link); // drop before sending to prevent deadlock
                         transport.send_packet(packet).await;
@@ -144,12 +147,35 @@ impl Fc {
           match link_event.event {
             LinkEvent::Data(payload) => {
               log::trace!("data link {} payload ({})", link_event.id, payload.len());
-              match port_writer.write_all(payload.as_slice()).await {
-                Ok(()) => log::trace!("port sent {} bytes", payload.len()),
-                Err(err) => {
-                  log::error!("port error sending bytes: {err:?}");
-                  break
+              // parse payload: [seqnum, data]
+              let seqnum =
+                u64::from_be_bytes(payload.as_slice()[0..8].try_into().unwrap());
+              if payload.len() > 8 {
+                // TODO: port write and ack reply in parallel?
+                // data packet
+                match port_writer.write_all(&payload.as_slice()[8..]).await {
+                  Ok(()) => log::trace!("port sent {} bytes", payload.len()),
+                  Err(err) => {
+                    log::error!("port error sending bytes: {err:?}");
+                    break
+                  }
                 }
+                // send ack
+                if let Some(link) = transport.find_in_link(&link_event.id).await {
+                  let link = link.lock().await;
+                  match link.data_packet(&seqnum.to_be_bytes()[..]) {
+                    Ok(packet) => {
+                      drop(link); // drop to prevent deadlock
+                      transport.send_packet(packet).await;
+                    }
+                    Err(err) => log::error!("error creating ack packet: {err:?}")
+                  }
+                } else {
+                  log::error!("could not find link for ack")
+                }
+              } else {
+                // ack packet
+                self.mavlink_buffer.lock().await.ack(Seqnum(seqnum));
               }
             }
             LinkEvent::Activated => {
@@ -222,11 +248,51 @@ impl Fc {
         }
       }
     };
+    // re-send un-acked messages after a timeout
+    let retransmit_loop = async || {
+      let default_sleep = time::Duration::from_millis(100);
+      loop {
+        let lock = data_link.lock().await;
+        if let Some(link) = lock.as_ref() {
+          let sleep_for = if self.mavlink_buffer.lock().await.buffer().is_empty() {
+            // no messages to re-transmit
+            default_sleep
+          } else {
+            // get the RTT to calculate timeout
+            let link = link.lock().await;
+            let rtt = *link.rtt();
+            let timeout = (rtt * 3) / 2;  // * 1.5
+            // re-transmit
+            let retransmit = self.mavlink_buffer.lock().await.retransmit(timeout);
+            let packets = retransmit.into_iter().map(|payload|
+              match link.data_packet(payload.as_slice()) {
+                Ok(packet) => packet,
+                Err(err) => {
+                  log::error!("error creating re-transmit packet: {err:?}");
+                  panic!("error creating re-transmit packet: {err:?}")
+                }
+              }
+            ).collect::<Vec<_>>();
+            drop(link); // drop to prevent deadlock
+            drop(lock);
+            for packet in packets {
+              transport.send_packet(packet).await;
+            }
+            rtt / 2
+          };
+          time::sleep(sleep_for).await;
+        } else {
+          drop(lock);
+          time::sleep(default_sleep).await;
+        }
+      }
+    };
     // run
     tokio::select!{
       _ = read_port_loop() => log::info!("read port loop exited: shutting down"),
       _ = link_event_loop() => log::info!("link event loop exited: shutting down"),
       _ = link_loop() => log::info!("link loop exited: shutting down"),
+      _ = retransmit_loop() => log::info!("retransmit loop exited: shutting down"),
       _ = tokio::signal::ctrl_c() => log::info!("got ctrl-c: shutting down")
     }
     Ok(())
