@@ -13,7 +13,7 @@ use reticulum::iface::kaonic::RadioConfig;
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
-use crate::MavlinkBuffer;
+use crate::{MavlinkBuffer, Seqnum};
 
 pub struct Gc {
   config: Config,
@@ -45,6 +45,7 @@ impl Gc {
     -> Result<(), Error>
   {
     log::info!("running gc");
+    // create destinations
     let data_destination = transport.add_destination(id.clone(),
       DestinationName::new("rns_mavlink", "gc.mavlink_data")).await;
     let data_destination_hash = data_destination.lock().await.desc.address_hash;
@@ -59,18 +60,19 @@ impl Gc {
       transport.send_announce(&config_destination, None).await;
       time::sleep(time::Duration::from_secs(2)).await;
     };
-    let link_id: Arc<tokio::sync::Mutex<Option<LinkId>>> =
+    // link variables
+    let data_link_id: Arc<tokio::sync::Mutex<Option<LinkId>>> =
       Arc::new(tokio::sync::Mutex::new(None));
     let config_link_id: Arc<tokio::sync::Mutex<Option<LinkId>>> =
       Arc::new(tokio::sync::Mutex::new(None));
-    log::info!("creating ground control UDP reply socket for port {}",
-      self.config.gc_reply_port);
-    let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.gc_reply_port))
-      .await.map_err(Error::IoError)?;
     // search for ground station on network at gc_udp_port
     // TODO: would be nice to use mdns here but mdns crate didn't seem to work
     // TODO: after the ground station is found the address will be set until the service
     // restarts, can we detect disconnection and change of address ?
+    log::info!("creating ground control UDP reply socket for port {}",
+      self.config.gc_reply_port);
+    let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.gc_reply_port))
+      .await.map_err(Error::IoError)?;
     log::info!("searching for ground station on network at port {}",
       self.config.gc_udp_port);
     let mut n = 2;
@@ -99,32 +101,32 @@ impl Gc {
       loop {
         match socket.recv_from(&mut buf).await {
           Ok((size, src)) => {
+            if size == 0 {
+              log::warn!("zero size UDP packet data");
+              continue
+            }
             let data = &buf[..size];
             match str::from_utf8(data) {
               Ok(text) => log::trace!("received from {}: {}", src, text),
               Err(_) => log::trace!("received non-UTF8 data from {}: {:?}", src, data),
             }
-            let link_id = link_id.lock().await;
+            let link_id = data_link_id.lock().await;
             if let Some(link_id) = link_id.as_ref() {
               if let Some(link) = transport.find_in_link(link_id).await {
+                // if the link is active, forward to flight controller
                 let link = link.lock().await;
-                let seqnum = self.mavlink_buffer.lock().await.push(data.to_vec());
-                log::trace!("enqueued seqnum {seqnum}");
-                let mavlink_buffer = self.mavlink_buffer.lock().await;
-                if mavlink_buffer.len() == 1 {
-                  if let Some((seqnum, payload)) = mavlink_buffer.last() {
-                    log::trace!("sending seq[{seqnum}] on link ({link_id})");
-                    match link.data_packet(&payload[..]) {
-                      Ok(packet) => {
-                        drop(link); // drop to prevent deadlock
-                        transport.send_packet(packet).await;
-                      }
-                      Err(err) => log::error!("error creating data packet: {err:?}")
-                    }
+                let (seqnum, payload) = self.mavlink_buffer.lock().await
+                  .push(data.to_vec());
+                log::trace!("sending seq[{}] on link ({link_id})", seqnum.0);
+                match link.data_packet(&payload[..]) {
+                  Ok(packet) => {
+                    drop(link); // drop to prevent deadlock
+                    transport.send_packet(packet).await;
                   }
+                  Err(err) => log::error!("error creating data packet: {err:?}")
                 }
               } else {
-                log::error!("could not find in link ({link_id})")
+                log::error!("could not find data link ({link_id})")
               }
             }
           }
@@ -150,12 +152,15 @@ impl Gc {
             log::trace!("got in link event with address hash: {}",
               link_event.address_hash);
             if link_event.address_hash == data_destination_hash {
+              // data link event
               match link_event.event {
                 LinkEvent::Data(payload) => {
                   log::trace!("data link {} payload ({})", link_event.id, payload.len());
+                  // parse payload: [seqnum, data]
                   let seqnum =
-                    i64::from_be_bytes(payload.as_slice()[0..8].try_into().unwrap());
-                  if seqnum >= 0 {
+                    u64::from_be_bytes(payload.as_slice()[0..8].try_into().unwrap());
+                  if payload.len() > 8 {
+                    // TODO: socket send and ack reply in parallel?
                     // data packet
                     match socket.send_to(&payload.as_slice()[8..], target).await {
                       Ok(n) => log::trace!("socket sent {n} bytes"),
@@ -164,10 +169,9 @@ impl Gc {
                         break
                       }
                     }
-                    // ack
+                    // send ack
                     if let Some(link) = transport.find_in_link(&link_event.id).await {
                       let link = link.lock().await;
-                      let seqnum = -(seqnum as i64);
                       match link.data_packet(&seqnum.to_be_bytes()[..]) {
                         Ok(packet) => {
                           drop(link); // drop to prevent deadlock
@@ -179,21 +183,23 @@ impl Gc {
                       log::error!("could not find link for ack")
                     }
                   } else {
-                    let seqnum = seqnum.abs() as u64;
-                    self.mavlink_buffer.lock().await.ack(seqnum);
+                    // ack packet
+                    self.mavlink_buffer.lock().await.ack(Seqnum(seqnum));
                   }
                 }
                 LinkEvent::Activated => {
                   log::info!("data link activated {}", link_event.id);
-                  let mut link_id = link_id.lock().await;
+                  let mut link_id = data_link_id.lock().await;
                   *link_id = Some(link_event.id);
                 }
                 LinkEvent::Closed => {
                   log::info!("data link closed {}", link_event.id);
-                  let _ = link_id.lock().await.take();
+                  let _ = data_link_id.lock().await.take();
+                  self.mavlink_buffer.lock().await.clear();
                 }
               }
             } else if link_event.address_hash == config_destination_hash {
+              // config link event
               match link_event.event {
                 LinkEvent::Data(payload) => {
                   log::trace!("config link {} payload ({})", link_event.id, payload.len());
@@ -238,10 +244,53 @@ impl Gc {
         }
       }
     };
+    // re-send un-acked messages after a timeout
+    let retransmit_loop = async || {
+      let default_sleep = time::Duration::from_millis(100);
+      loop {
+        let link_id_guard = data_link_id.lock().await;
+        if let Some(link_id) = link_id_guard.as_ref() {
+          let rtt = if self.mavlink_buffer.lock().await.buffer().is_empty() {
+            // no messages to re-transmit
+            default_sleep
+          } else if let Some(link) = transport.find_in_link(link_id).await {
+            // get the RTT to calculate timeout
+            let link = link.lock().await;
+            let rtt = *link.rtt();
+            let timeout = (rtt * 3) / 2;  // * 1.5
+            // re-transmit
+            let retransmit = self.mavlink_buffer.lock().await.retransmit(timeout);
+            let packets = retransmit.into_iter().map(|payload|
+              match link.data_packet(payload.as_slice()) {
+                Ok(packet) => packet,
+                Err(err) => {
+                  log::error!("error creating re-transmit packet: {err:?}");
+                  panic!("error creating re-transmit packet: {err:?}")
+                }
+              }
+            ).collect::<Vec<_>>();
+            drop(link); // drop to prevent deadlock
+            for packet in packets {
+              transport.send_packet(packet).await;
+            }
+            rtt / 2
+          } else {
+            log::error!("could not find data link ({link_id})");
+            default_sleep
+          };
+          drop(link_id_guard);
+          time::sleep(rtt).await;
+        } else {
+          drop(link_id_guard);
+          time::sleep(default_sleep).await;
+        }
+      }
+    };
     tokio::select!{
       _ = announce_loop() => log::info!("announce loop exited: shutting down"),
       _ = socket_loop() => log::info!("socket loop exited: shutting down"),
       _ = link_event_loop() => log::info!("link event loop exited: shutting down"),
+      _ = retransmit_loop() => log::info!("retransmit loop exited: shutting down"),
       _ = tokio::signal::ctrl_c() => log::info!("got ctrl-c: shutting down")
     }
     Ok(())

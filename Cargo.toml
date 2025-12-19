@@ -16,5 +16,7 @@ tokio = { version = "1.*", features = ["full"] }
 toml = "0.8.*"
 
 [dependencies.reticulum]
-git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs"
+#git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs"
+git = "https://github.com/spearman/Reticulum-rs"
+branch = "link-rtt"
 version = "0.1.*"

@@ -1279,7 +1279,7 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "reticulum"
 version = "0.1.0"
-source = "git+https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs#734c455409f1a7914dc534ab0d34f37e6f97d0c3"
+source = "git+https://github.com/spearman/Reticulum-rs?branch=link-rtt#c54550859686a64eca04dbf127d3269468b0d987"
 dependencies = [
  "aes",
  "cbc",
