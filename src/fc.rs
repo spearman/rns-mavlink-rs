@@ -261,6 +261,7 @@ impl Fc {
     let retransmit_loop = async || {
       let default_sleep = time::Duration::from_millis(100);
       let mut debug_ts = time::Instant::now();
+      let mut resend_counter = 0;
       loop {
         let lock = data_link.lock().await;
         if let Some(link) = lock.as_ref() {
@@ -285,10 +286,12 @@ impl Fc {
             ).collect::<Vec<_>>();
             drop(link); // drop to prevent deadlock
             drop(lock);
-            log::debug!("re-sending {} messages", packets.len());
+            let npackets = packets.len();
+            log::debug!("re-sending {npackets} messages");
             for packet in packets {
               transport.send_packet(packet).await;
             }
+            resend_counter += npackets;
             rtt / 2
           };
           time::sleep(sleep_for).await;
@@ -297,7 +300,8 @@ impl Fc {
           time::sleep(default_sleep).await;
         }
         if debug_ts.elapsed() >= time::Duration::from_secs(2) {
-          log::debug!("current seqnum: {}", self.mavlink_buffer.lock().await.sequence.0);
+          log::debug!("current seqnum (num resends): {} ({resend_counter})",
+            self.mavlink_buffer.lock().await.sequence.0);
           log::debug!("received count: {}", self.received.lock().await.len());
           debug_ts = time::Instant::now();
         }

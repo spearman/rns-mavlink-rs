@@ -255,6 +255,7 @@ impl Gc {
     let retransmit_loop = async || {
       let default_sleep = time::Duration::from_millis(100);
       let mut debug_ts = time::Instant::now();
+      let mut resend_counter = 0;
       loop {
         let link_id_guard = data_link_id.lock().await;
         if let Some(link_id) = link_id_guard.as_ref() {
@@ -278,10 +279,12 @@ impl Gc {
               }
             ).collect::<Vec<_>>();
             drop(link); // drop to prevent deadlock
-            log::debug!("re-sending {} messages", packets.len());
+            let npackets = packets.len();
+            log::debug!("re-sending {npackets} messages");
             for packet in packets {
               transport.send_packet(packet).await;
             }
+            resend_counter += npackets;
             rtt / 2
           } else {
             log::error!("could not find data link ({link_id})");
@@ -294,7 +297,8 @@ impl Gc {
           time::sleep(default_sleep).await;
         }
         if debug_ts.elapsed() >= time::Duration::from_secs(2) {
-          log::debug!("current seqnum: {}", self.mavlink_buffer.lock().await.sequence.0);
+          log::debug!("current seqnum (num resends): {} ({resend_counter})",
+            self.mavlink_buffer.lock().await.sequence.0);
           log::debug!("received count: {}", self.received.lock().await.len());
           debug_ts = time::Instant::now();
         }
