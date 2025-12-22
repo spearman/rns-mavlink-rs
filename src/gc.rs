@@ -1,6 +1,8 @@
 use std::net;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use range_set::RangeSet;
 use serde::Deserialize;
 use tokio;
 use tokio::net::UdpSocket;
@@ -17,7 +19,8 @@ use crate::{MavlinkBuffer, Seqnum};
 
 pub struct Gc {
   config: Config,
-  mavlink_buffer: Arc<tokio::sync::Mutex<MavlinkBuffer>>
+  mavlink_buffer: Arc<tokio::sync::Mutex<MavlinkBuffer>>,
+  received: Arc<tokio::sync::Mutex<RangeSet<[RangeInclusive<u64>; 4]>>>
 }
 
 #[derive(Deserialize)]
@@ -38,7 +41,8 @@ pub enum Error {
 impl Gc {
   pub fn new(config: Config) -> Self {
     let mavlink_buffer = Arc::new(tokio::sync::Mutex::new(MavlinkBuffer::new()));
-    Gc { config, mavlink_buffer }
+    let received = Arc::new(tokio::sync::Mutex::new(RangeSet::new()));
+    Gc { config, mavlink_buffer, received }
   }
 
   pub async fn run(&self, mut transport: Transport, id: PrivateIdentity)
@@ -162,11 +166,13 @@ impl Gc {
                   if payload.len() > 8 {
                     // TODO: socket send and ack reply in parallel?
                     // data packet
-                    match socket.send_to(&payload.as_slice()[8..], target).await {
-                      Ok(n) => log::trace!("socket sent {n} bytes"),
-                      Err(err) => {
-                        log::error!("socket error sending bytes: {err:?}");
-                        break
+                    if self.received.lock().await.insert(seqnum) {
+                      match socket.send_to(&payload.as_slice()[8..], target).await {
+                        Ok(n) => log::trace!("socket sent {n} bytes"),
+                        Err(err) => {
+                          log::error!("socket error sending bytes: {err:?}");
+                          break
+                        }
                       }
                     }
                     // send ack
@@ -191,6 +197,7 @@ impl Gc {
                   log::info!("data link activated {}", link_event.id);
                   let mut link_id = data_link_id.lock().await;
                   *link_id = Some(link_event.id);
+                  self.received.lock().await.clear();
                 }
                 LinkEvent::Closed => {
                   log::info!("data link closed {}", link_event.id);
@@ -247,6 +254,7 @@ impl Gc {
     // re-send un-acked messages after a timeout
     let retransmit_loop = async || {
       let default_sleep = time::Duration::from_millis(100);
+      let mut debug_ts = time::Instant::now();
       loop {
         let link_id_guard = data_link_id.lock().await;
         if let Some(link_id) = link_id_guard.as_ref() {
@@ -270,6 +278,7 @@ impl Gc {
               }
             ).collect::<Vec<_>>();
             drop(link); // drop to prevent deadlock
+            log::debug!("re-sending {} messages", packets.len());
             for packet in packets {
               transport.send_packet(packet).await;
             }
@@ -283,6 +292,11 @@ impl Gc {
         } else {
           drop(link_id_guard);
           time::sleep(default_sleep).await;
+        }
+        if debug_ts.elapsed() >= time::Duration::from_secs(2) {
+          log::debug!("current seqnum: {}", self.mavlink_buffer.lock().await.sequence.0);
+          log::debug!("received count: {}", self.received.lock().await.len());
+          debug_ts = time::Instant::now();
         }
       }
     };

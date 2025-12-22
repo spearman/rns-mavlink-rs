@@ -10,7 +10,7 @@ pub use gc::Gc;
 /// Keep track of current seqnum and un-acked messages.
 pub(crate) struct MavlinkBuffer {
   pub sequence: Seqnum,
-  pub buffer: BTreeMap<Seqnum, Message>
+  pub buffer: BTreeMap<Seqnum, Message>,
 }
 
 /// Message last sent to peer at ts. When re-sending we will update the ts to reflect

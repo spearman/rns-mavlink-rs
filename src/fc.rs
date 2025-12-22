@@ -1,5 +1,7 @@
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use range_set::RangeSet;
 use serde::{Deserialize, Serialize};
 use tokio;
 use tokio::time;
@@ -17,7 +19,8 @@ pub const CONFIG_PATH: &str = "Fc.toml";
 pub struct Fc {
   config: Config,
   radio_config_tx: mpsc::Sender<kaonic::RadioConfig>,
-  mavlink_buffer: Arc<tokio::sync::Mutex<MavlinkBuffer>>
+  mavlink_buffer: Arc<tokio::sync::Mutex<MavlinkBuffer>>,
+  received: Arc<tokio::sync::Mutex<RangeSet<[RangeInclusive<u64>; 4]>>>
 }
 
 #[derive(Deserialize, Serialize)]
@@ -44,7 +47,8 @@ impl Fc {
     -> Result<Self, ()>
   {
     let mavlink_buffer = Arc::new(tokio::sync::Mutex::new(MavlinkBuffer::new()));
-    let fc = Fc { config, radio_config_tx, mavlink_buffer };
+    let received = Arc::new(tokio::sync::Mutex::new(RangeSet::new()));
+    let fc = Fc { config, radio_config_tx, mavlink_buffer, received };
     Ok(fc)
   }
 
@@ -84,6 +88,7 @@ impl Fc {
           if data_link.is_none() {
             log::info!("creating data link for {address}");
             *data_link = Some(transport.link(destination.desc).await);
+            self.received.lock().await.clear();
           }
         } else if address == gc_config_destination {
           log::debug!("got gc radio config destination announce {address}");
@@ -153,12 +158,16 @@ impl Fc {
               if payload.len() > 8 {
                 // TODO: port write and ack reply in parallel?
                 // data packet
-                match port_writer.write_all(&payload.as_slice()[8..]).await {
-                  Ok(()) => log::trace!("port sent {} bytes", payload.len()),
-                  Err(err) => {
-                    log::error!("port error sending bytes: {err:?}");
-                    break
+                if self.received.lock().await.insert(seqnum) {
+                  match port_writer.write_all(&payload.as_slice()[8..]).await {
+                    Ok(()) => log::trace!("port sent {} bytes", payload.len()),
+                    Err(err) => {
+                      log::error!("port error sending bytes: {err:?}");
+                      break
+                    }
                   }
+                } else {
+                  log::debug!("already received seqnum {seqnum}");
                 }
                 // send ack
                 if let Some(link) = transport.find_in_link(&link_event.id).await {
@@ -251,6 +260,7 @@ impl Fc {
     // re-send un-acked messages after a timeout
     let retransmit_loop = async || {
       let default_sleep = time::Duration::from_millis(100);
+      let mut debug_ts = time::Instant::now();
       loop {
         let lock = data_link.lock().await;
         if let Some(link) = lock.as_ref() {
@@ -275,6 +285,7 @@ impl Fc {
             ).collect::<Vec<_>>();
             drop(link); // drop to prevent deadlock
             drop(lock);
+            log::debug!("re-sending {} messages", packets.len());
             for packet in packets {
               transport.send_packet(packet).await;
             }
@@ -284,6 +295,11 @@ impl Fc {
         } else {
           drop(lock);
           time::sleep(default_sleep).await;
+        }
+        if debug_ts.elapsed() >= time::Duration::from_secs(2) {
+          log::debug!("current seqnum: {}", self.mavlink_buffer.lock().await.sequence.0);
+          log::debug!("received count: {}", self.received.lock().await.len());
+          debug_ts = time::Instant::now();
         }
       }
     };
