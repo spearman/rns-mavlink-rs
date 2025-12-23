@@ -120,6 +120,8 @@ impl Fc {
                       log::info!("read port loop: data link is closed");
                       break 'read_loop
                     } else if status != LinkStatus::Active {
+                      drop(link);
+                      *lock = Some(link_mutex);
                       log::info!("read port loop: data link is not yet active ({status:?})");
                     } else {
                       let (seqnum, payload) = self.mavlink_buffer.lock().await
