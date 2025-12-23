@@ -7,7 +7,7 @@ use tokio;
 use tokio::time;
 use tokio::sync::mpsc;
 
-use reticulum::destination::link::{Link, LinkEvent};
+use reticulum::destination::link::{Link, LinkEvent, LinkStatus};
 use reticulum::iface::kaonic::{self, RadioConfig};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
@@ -269,30 +269,42 @@ impl Fc {
             // no messages to re-transmit
             default_sleep
           } else {
-            // get the RTT to calculate timeout
             let link = link.lock().await;
-            let rtt = *link.rtt();
-            let timeout = (rtt * 3) / 2;  // * 1.5
-            // re-transmit
-            let retransmit = self.mavlink_buffer.lock().await.retransmit(timeout);
-            let packets = retransmit.into_iter().map(|payload|
-              match link.data_packet(payload.as_slice()) {
-                Ok(packet) => packet,
-                Err(err) => {
-                  log::error!("error creating re-transmit packet: {err:?}");
-                  panic!("error creating re-transmit packet: {err:?}")
+            let status = link.status();
+            if status == LinkStatus::Active {
+              // get the RTT to calculate timeout
+              let rtt = *link.rtt();
+              let timeout = (rtt * 3) / 2;  // * 1.5
+              // re-transmit
+              let retransmit = self.mavlink_buffer.lock().await.retransmit(timeout);
+              let packets = retransmit.into_iter().map(|payload|
+                match link.data_packet(payload.as_slice()) {
+                  Ok(packet) => packet,
+                  Err(err) => {
+                    log::error!("error creating re-transmit packet: {err:?}");
+                    panic!("error creating re-transmit packet: {err:?}")
+                  }
                 }
+              ).collect::<Vec<_>>();
+              drop(link); // drop to prevent deadlock
+              drop(lock);
+              let npackets = packets.len();
+              log::debug!("re-sending {npackets} messages");
+              for packet in packets {
+                transport.send_packet(packet).await;
               }
-            ).collect::<Vec<_>>();
-            drop(link); // drop to prevent deadlock
-            drop(lock);
-            let npackets = packets.len();
-            log::debug!("re-sending {npackets} messages");
-            for packet in packets {
-              transport.send_packet(packet).await;
+              resend_counter += npackets;
+              rtt / 2
+            } else {
+              if status == LinkStatus::Closed {
+                log::info!("data link is closed");
+                drop(link);
+                let _ = data_link.lock().await.take();
+              } else {
+                log::info!("data link is not yet active")
+              }
+              default_sleep
             }
-            resend_counter += npackets;
-            rtt / 2
           };
           time::sleep(sleep_for).await;
         } else {
