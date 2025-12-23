@@ -198,10 +198,12 @@ impl Gc {
                   let mut link_id = data_link_id.lock().await;
                   *link_id = Some(link_event.id);
                   self.received.lock().await.clear();
+                  self.mavlink_buffer.lock().await.clear();
                 }
                 LinkEvent::Closed => {
                   log::info!("data link closed {}", link_event.id);
                   let _ = data_link_id.lock().await.take();
+                  self.received.lock().await.clear();
                   self.mavlink_buffer.lock().await.clear();
                 }
               }

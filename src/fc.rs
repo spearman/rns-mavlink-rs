@@ -89,6 +89,7 @@ impl Fc {
             log::info!("creating data link for {address}");
             *data_link = Some(transport.link(destination.desc).await);
             self.received.lock().await.clear();
+            self.mavlink_buffer.lock().await.clear();
           }
         } else if address == gc_config_destination {
           log::debug!("got gc radio config destination announce {address}");
@@ -114,6 +115,11 @@ impl Fc {
                   let mut lock = data_link.lock().await;
                   if let Some(link_mutex) = lock.take() {
                     let mut link = link_mutex.lock().await;
+                    let status = link.status();
+                    if status == LinkStatus::Closed {
+                      log::info!("read port loop: data link is closed");
+                      break 'read_loop
+                    }
                     let (seqnum, payload) = self.mavlink_buffer.lock().await
                       .push(data.to_vec());
                     log::trace!("sending seq[{}] on link ({})", seqnum.0, link.id());
@@ -172,12 +178,19 @@ impl Fc {
                 // send ack
                 if let Some(link) = transport.find_in_link(&link_event.id).await {
                   let link = link.lock().await;
-                  match link.data_packet(&seqnum.to_be_bytes()[..]) {
-                    Ok(packet) => {
-                      drop(link); // drop to prevent deadlock
-                      transport.send_packet(packet).await;
+                  let status = link.status();
+                  if status == LinkStatus::Closed {
+                    log::info!("link event loop: data link closed");
+                  } else if status == LinkStatus::Active {
+                    match link.data_packet(&seqnum.to_be_bytes()[..]) {
+                      Ok(packet) => {
+                        drop(link); // drop to prevent deadlock
+                        transport.send_packet(packet).await;
+                      }
+                      Err(err) => log::error!("error creating ack packet: {err:?}")
                     }
-                    Err(err) => log::error!("error creating ack packet: {err:?}")
+                  } else {
+                    log::info!("link event loop: data link not active");
                   }
                 } else {
                   log::error!("could not find link for ack")
@@ -194,6 +207,8 @@ impl Fc {
             LinkEvent::Closed => {
               log::warn!("data link closed {}", link_event.id);
               let _ = data_link.lock().await.take();
+              self.received.lock().await.clear();
+              self.mavlink_buffer.lock().await.clear();
             }
           }
         } else if link_event.address_hash == gc_config_destination {
@@ -297,7 +312,7 @@ impl Fc {
               rtt / 2
             } else {
               if status == LinkStatus::Closed {
-                log::info!("data link is closed");
+                log::info!("re-transmit loop: data link is closed");
                 drop(link);
                 let _ = data_link.lock().await.take();
               } else {
