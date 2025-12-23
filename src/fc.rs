@@ -119,20 +119,23 @@ impl Fc {
                     if status == LinkStatus::Closed {
                       log::info!("read port loop: data link is closed");
                       break 'read_loop
-                    }
-                    let (seqnum, payload) = self.mavlink_buffer.lock().await
-                      .push(data.to_vec());
-                    log::trace!("sending seq[{}] on link ({})", seqnum.0, link.id());
-                    match link.data_packet(&payload[..]) {
-                      Ok(packet) => {
-                        drop(link); // drop before sending to prevent deadlock
-                        transport.send_packet(packet).await;
-                        *lock = Some(link_mutex);
-                      }
-                      Err(err) => {
-                        log::error!("error creating data packet: {err:?}");
-                        link.close();
-                        break 'read_loop
+                    } else if status != LinkStatus::Active {
+                      log::info!("read port loop: data link is not yet active ({status:?})");
+                    } else {
+                      let (seqnum, payload) = self.mavlink_buffer.lock().await
+                        .push(data.to_vec());
+                      log::trace!("sending seq[{}] on link ({})", seqnum.0, link.id());
+                      match link.data_packet(&payload[..]) {
+                        Ok(packet) => {
+                          drop(link); // drop before sending to prevent deadlock
+                          transport.send_packet(packet).await;
+                          *lock = Some(link_mutex);
+                        }
+                        Err(err) => {
+                          log::error!("error creating data packet: {err:?}");
+                          link.close();
+                          break 'read_loop
+                        }
                       }
                     }
                   } else {
@@ -190,7 +193,7 @@ impl Fc {
                       Err(err) => log::error!("error creating ack packet: {err:?}")
                     }
                   } else {
-                    log::info!("link event loop: data link not active");
+                    log::info!("link event loop: data link not active ({status:?})");
                   }
                 } else {
                   log::error!("could not find link for ack")
@@ -316,7 +319,7 @@ impl Fc {
                 drop(link);
                 let _ = data_link.lock().await.take();
               } else {
-                log::info!("data link is not yet active")
+                log::info!("data link is not yet active ({status:?})")
               }
               default_sleep
             }
