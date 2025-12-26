@@ -5,16 +5,26 @@ use tokio::sync::mpsc;
 use reticulum::destination::{DestinationName, SingleInputDestination};
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::kaonic::kaonic_grpc::KaonicGrpc;
+use reticulum::iface::udp::UdpInterface;
 use reticulum::transport::{Transport, TransportConfig};
 
 use rns_mavlink;
 
-/// Command line arguments
+/// Choose one of `-a <kaonic-grpc-address>` or
+/// `-p <udp-listen-port> -f <udp-forward-address>`
 #[derive(Parser)]
 #[clap(name = "Rns-Mavlink Flight Controller Bridge", version)]
 pub struct Command {
-  #[clap(short = 'a', help = "Reticulum Kaonic gRPC address")]
-  pub address: String
+  #[clap(short = 'a', group = "transport", required_unless_present = "udp_listen_port",
+    help = "Reticulum Kaonic gRPC address")]
+  pub kaonic_grpc_address: Option<String>,
+  #[clap(short = 'p', group = "transport",
+    required_unless_present = "kaonic_grpc_address",
+    help = "Reticulum UDP listen port")]
+  pub udp_listen_port: Option<u16>,
+  #[clap(short = 'f', requires = "udp_listen_port",
+    help = "Reticulum UDP forward address")]
+  pub udp_forward_address: Option<std::net::SocketAddr>
 }
 
 #[tokio::main]
@@ -33,7 +43,7 @@ async fn main() {
   // init logging
   env_logger::Builder::from_env(env_logger::Env::default()
     .default_filter_or(&config.log_level)).init();
-  log::info!("fc start with RNS kaonic grpc address {}", cmd.address);
+  log::info!("fc start");
   // mavlink bridge
   let radio_config = config.radio_config.clone();
   let (tx, rx) = mpsc::channel(16);
@@ -48,9 +58,23 @@ async fn main() {
   log::info!("starting reticulum");
   let id = PrivateIdentity::new_from_name("mavlink-rns-fc");
   let transport = Transport::new(TransportConfig::new("fc", &id, true));
-  let _ = transport.iface_manager().lock().await.spawn(
-    KaonicGrpc::new(cmd.address, radio_config, Some(rx)),
-    KaonicGrpc::spawn);
+  if let Some(address) = cmd.kaonic_grpc_address.as_ref() {
+    // kaonic
+    log::info!("creating RNS kaonic interface with kaonic grpc address {}", address);
+    let _ = transport.iface_manager().lock().await.spawn(
+      KaonicGrpc::new(address, radio_config, Some(rx)),
+      KaonicGrpc::spawn);
+  } else {
+    // udp
+    let port = cmd.udp_listen_port.unwrap();
+    let forward = cmd.udp_forward_address.unwrap();
+    log::info!("creating RNS UDP interface with listen \
+      port {port} and forward node {forward}");
+    let _ = transport.iface_manager().lock().await.spawn(
+    UdpInterface::new(format!("0.0.0.0:{}", cmd.udp_listen_port.unwrap()),
+      Some(cmd.udp_forward_address.unwrap().to_string())),
+    UdpInterface::spawn);
+  }
   let destination = SingleInputDestination::new(id,
     DestinationName::new("rns_mavlink", "fc"));
   log::info!("created destination: {}", destination.desc.address_hash);
