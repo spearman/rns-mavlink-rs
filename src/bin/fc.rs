@@ -45,26 +45,19 @@ async fn main() {
   env_logger::Builder::from_env(env_logger::Env::default()
     .default_filter_or(&config.log_level)).init();
   log::info!("fc start");
-  // mavlink bridge
   let radio_config = config.radio_config.clone();
-  let (tx, rx) = mpsc::channel(16);
-  let mut fc = match rns_mavlink::Fc::new(config, tx) {
-    Ok(fc) => fc,
-    Err(err) => {
-      log::error!("error creating fc bridge: {:?}", err);
-      std::process::exit(1)
-    }
-  };
   // start reticulum
   log::info!("starting reticulum");
   let id = PrivateIdentity::new_from_name("mavlink-rns-fc");
   let transport = Transport::new(TransportConfig::new("fc", &id, true));
-  if let Some(address) = cmd.kaonic_grpc_address.as_ref() {
+  let maybe_config_tx = if let Some(address) = cmd.kaonic_grpc_address.as_ref() {
     // kaonic
     log::info!("creating RNS kaonic interface with kaonic grpc address {}", address);
+    let (config_tx, config_rx) = mpsc::channel(16);
     let _ = transport.iface_manager().lock().await.spawn(
-      KaonicGrpc::new(address, radio_config, Some(rx)),
+      KaonicGrpc::new(address, radio_config, Some(config_rx)),
       KaonicGrpc::spawn);
+    Some(config_tx)
   } else {
     // udp
     let port = cmd.udp_listen_port.unwrap();
@@ -72,13 +65,22 @@ async fn main() {
     log::info!("creating RNS UDP interface with listen \
       port {port} and forward node {forward}");
     let _ = transport.iface_manager().lock().await.spawn(
-    UdpInterface::new(format!("0.0.0.0:{}", cmd.udp_listen_port.unwrap()),
-      Some(cmd.udp_forward_address.unwrap().to_string())),
-    UdpInterface::spawn);
-  }
+      UdpInterface::new(format!("0.0.0.0:{}", cmd.udp_listen_port.unwrap()),
+        Some(cmd.udp_forward_address.unwrap().to_string())),
+      UdpInterface::spawn);
+    None
+  };
   let destination = SingleInputDestination::new(id,
     DestinationName::new("rns_mavlink", "fc"));
   log::info!("created destination: {}", destination.desc.address_hash);
+  // mavlink bridge
+  let mut fc = match rns_mavlink::Fc::new(config, maybe_config_tx) {
+    Ok(fc) => fc,
+    Err(err) => {
+      log::error!("error creating fc bridge: {:?}", err);
+      std::process::exit(1)
+    }
+  };
   // run
   if let Err(err) = fc.run(transport).await {
     log::error!("fc bridge exited with error: {:?}", err);

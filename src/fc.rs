@@ -18,7 +18,7 @@ pub const CONFIG_PATH: &str = "Fc.toml";
 
 pub struct Fc {
   config: Config,
-  radio_config_tx: mpsc::Sender<kaonic::RadioConfig>,
+  radio_config_tx: Option<mpsc::Sender<kaonic::RadioConfig>>,
   mavlink_buffer: Arc<tokio::sync::Mutex<MavlinkBuffer>>,
   received: Arc<tokio::sync::Mutex<RangeSet<[RangeInclusive<u64>; 4]>>>
 }
@@ -43,7 +43,7 @@ pub enum Error {
 }
 
 impl Fc {
-  pub fn new(config: Config, radio_config_tx: mpsc::Sender<kaonic::RadioConfig>)
+  pub fn new(config: Config, radio_config_tx: Option<mpsc::Sender<kaonic::RadioConfig>>)
     -> Result<Self, ()>
   {
     let mavlink_buffer = Arc::new(tokio::sync::Mutex::new(MavlinkBuffer::new()));
@@ -102,6 +102,7 @@ impl Fc {
     };
     // read serial port and forward to links
     let mut read_port_loop = async || {
+      let mut debug_ts = time::Instant::now() - time::Duration::from_secs(2);
       loop {
         if data_link.lock().await.is_some() {
           log::info!("reading from serial port {}", serial_port);
@@ -138,6 +139,11 @@ impl Fc {
               Err(e) => log::error!("error reading serial port: {}", e)
             }
           }
+        }
+        let now = time::Instant::now();
+        if now - debug_ts >= time::Duration::from_secs(2) {
+          log::debug!("read port loop: waiting for data link");
+          debug_ts = now;
         }
         time::sleep(time::Duration::from_millis(200)).await;
       }
@@ -208,34 +214,39 @@ impl Fc {
                     log::info!("got gc radio config: matches current radio config");
                   } else {
                     log::info!("got gc radio config: updating radio config");
-                    self.config.radio_config = radio_config.clone();
-                    match self.radio_config_tx.send(radio_config).await {
-                      Ok(()) => {}
-                      Err(err) => {
-                        log::error!("error sending radio config: {err}");
-                        break
+                    if let Some(tx) = self.radio_config_tx.as_ref() {
+                      self.config.radio_config = radio_config.clone();
+                      match tx.send(radio_config).await {
+                        Ok(()) => {}
+                        Err(err) => {
+                          log::error!("error sending radio config: {err}");
+                          break
+                        }
                       }
-                    }
-                    // write config file
-                    let s = toml::to_string(&self.config).unwrap();
-                    match std::fs::write(CONFIG_PATH, &s) {
-                      Ok(_) => {}
-                      Err(err) => {
-                        log::error!("error writing config file: {err}");
-                        break
+                      // write config file
+                      let s = toml::to_string(&self.config).unwrap();
+                      match std::fs::write(CONFIG_PATH, &s) {
+                        Ok(_) => {}
+                        Err(err) => {
+                          log::error!("error writing config file: {err}");
+                          break
+                        }
                       }
-                    }
-                    // TODO: ack ?
-                    // pause to let config update take effect
-                    time::sleep(time::Duration::from_millis(500)).await;
-                    // the links will need to be re-created
-                    if let Some(link) = data_link.lock().await.take() {
-                      log::info!("closing data link");
-                      link.lock().await.close();
-                    }
-                    if let Some(link) = config_link.lock().await.take() {
-                      log::info!("closing config link");
-                      link.lock().await.close();
+                      // TODO: ack ?
+                      // pause to let config update take effect
+                      time::sleep(time::Duration::from_millis(500)).await;
+                      // the links will need to be re-created
+                      if let Some(link) = data_link.lock().await.take() {
+                        log::info!("closing data link");
+                        link.lock().await.close();
+                      }
+                      if let Some(link) = config_link.lock().await.take() {
+                        log::info!("closing config link");
+                        link.lock().await.close();
+                      }
+                    } else {
+                      log::error!("fc missing radio config tx channel");
+                      panic!("fc missing radio config tx channel");
                     }
                   }
                 }
@@ -312,9 +323,11 @@ impl Fc {
           time::sleep(default_sleep).await;
         }
         if debug_ts.elapsed() >= time::Duration::from_secs(2) {
-          log::debug!("current seqnum (num resends): {} ({resend_counter})",
-            self.mavlink_buffer.lock().await.sequence.0);
-          log::debug!("received count: {}", self.received.lock().await.len());
+          log::debug!(
+            "retransmit loop: (current seqnum, num resends, received count): \
+              ({}, {resend_counter}, {})",
+            self.mavlink_buffer.lock().await.sequence.0,
+            self.received.lock().await.len());
           debug_ts = time::Instant::now();
         }
       }
