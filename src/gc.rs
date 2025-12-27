@@ -26,6 +26,7 @@ pub struct Gc {
 #[derive(Deserialize)]
 pub struct Config {
   pub log_level: String,
+  pub gc_udp_subnet: net::Ipv4Addr,
   pub gc_udp_port: u16,
   pub gc_reply_port: u16,
   // TODO: deserialize AddressHash
@@ -81,15 +82,15 @@ impl Gc {
     let mut buf = vec![0; 64];
     let mut t_search = time::Instant::now() - time::Duration::from_secs (5);
     let ground_station_address = loop {
+      let subnet = self.config.gc_udp_subnet.octets();
       let now = time::Instant::now();
       if now - t_search >= time::Duration::from_secs (5) {
-        log::info!("searching for ground station on network at port {}",
-          self.config.gc_udp_port);
+        log::info!("searching for ground station on subnet {}.{}.{}.0/24 at port {}",
+          subnet[0], subnet[1], subnet[2], self.config.gc_udp_port);
         t_search = now;
       }
-      // TODO: make the subnet we are iterating over configurable
       let address = net::SocketAddrV4::new(
-        net::Ipv4Addr::new(192, 168, 10, n), self.config.gc_udp_port);
+        net::Ipv4Addr::new(subnet[0], subnet[1], subnet[2], n), self.config.gc_udp_port);
       socket.send_to(b"", address).await.map_err(Error::IoError)?;
       if let Ok(Ok((_, peer))) = tokio::time::timeout(
         time::Duration::from_millis(50), socket.recv_from(&mut buf[..])
