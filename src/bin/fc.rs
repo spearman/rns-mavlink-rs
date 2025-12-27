@@ -15,14 +15,15 @@ use rns_mavlink;
 #[derive(Parser)]
 #[clap(name = "Rns-Mavlink Flight Controller Bridge", version)]
 pub struct Command {
-  #[clap(short = 'a', group = "transport", required_unless_present = "udp_listen_port",
+  #[clap(short = 'a', long, group = "transport",
+    required_unless_present = "udp_listen_port",
     help = "Reticulum Kaonic gRPC address")]
   pub kaonic_grpc_address: Option<String>,
-  #[clap(short = 'p', group = "transport",
+  #[clap(short = 'p', long, group = "transport",
     required_unless_present = "kaonic_grpc_address",
     help = "Reticulum UDP listen port")]
   pub udp_listen_port: Option<u16>,
-  #[clap(short = 'f', requires = "udp_listen_port",
+  #[clap(short = 'f', long, requires = "udp_listen_port",
     help = "Reticulum UDP forward address")]
   pub udp_forward_address: Option<std::net::SocketAddr>
 }

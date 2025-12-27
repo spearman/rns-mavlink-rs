@@ -77,11 +77,16 @@ impl Gc {
       self.config.gc_reply_port);
     let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.gc_reply_port))
       .await.map_err(Error::IoError)?;
-    log::info!("searching for ground station on network at port {}",
-      self.config.gc_udp_port);
     let mut n = 2;
     let mut buf = vec![0; 64];
+    let mut t_search = time::Instant::now() - time::Duration::from_secs (5);
     let ground_station_address = loop {
+      let now = time::Instant::now();
+      if now - t_search >= time::Duration::from_secs (5) {
+        log::info!("searching for ground station on network at port {}",
+          self.config.gc_udp_port);
+        t_search = now;
+      }
       // TODO: make the subnet we are iterating over configurable
       let address = net::SocketAddrV4::new(
         net::Ipv4Addr::new(192, 168, 10, n), self.config.gc_udp_port);
