@@ -6,11 +6,11 @@ use range_set::RangeSet;
 use serde::Deserialize;
 use tokio;
 use tokio::net::UdpSocket;
+use tokio::sync::Mutex;
 use tokio::time;
 
-use reticulum::destination::DestinationName;
+use reticulum::destination::SingleInputDestination;
 use reticulum::destination::link::{LinkEvent, LinkId};
-use reticulum::identity::PrivateIdentity;
 use reticulum::iface::kaonic::RadioConfig;
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
@@ -19,8 +19,8 @@ use crate::{MavlinkBuffer, Seqnum};
 
 pub struct Gc {
   config: Config,
-  mavlink_buffer: Arc<tokio::sync::Mutex<MavlinkBuffer>>,
-  received: Arc<tokio::sync::Mutex<RangeSet<[RangeInclusive<u64>; 4]>>>
+  mavlink_buffer: Arc<Mutex<MavlinkBuffer>>,
+  received: Arc<Mutex<RangeSet<[RangeInclusive<u64>; 4]>>>
 }
 
 #[derive(Deserialize)]
@@ -41,35 +41,34 @@ pub enum Error {
 
 impl Gc {
   pub fn new(config: Config) -> Self {
-    let mavlink_buffer = Arc::new(tokio::sync::Mutex::new(MavlinkBuffer::new()));
-    let received = Arc::new(tokio::sync::Mutex::new(RangeSet::new()));
+    let mavlink_buffer = Arc::new(Mutex::new(MavlinkBuffer::new()));
+    let received = Arc::new(Mutex::new(RangeSet::new()));
     Gc { config, mavlink_buffer, received }
   }
 
-  pub async fn run(&self, mut transport: Transport, id: PrivateIdentity)
-    -> Result<(), Error>
-  {
+  pub async fn run(&self,
+    transport: Transport,
+    data_destination: Arc<Mutex<SingleInputDestination>>,
+    kaonic_config_destination: Option<Arc<Mutex<SingleInputDestination>>>
+  ) -> Result<(), Error> {
     log::info!("running gc");
-    // create destinations
-    let data_destination = transport.add_destination(id.clone(),
-      DestinationName::new("rns_mavlink", "gc.mavlink_data")).await;
     let data_destination_hash = data_destination.lock().await.desc.address_hash;
-    log::info!("created data destination: {data_destination_hash}");
-    let config_destination = transport.add_destination(id.clone(),
-      DestinationName::new("rns_mavlink", "gc.radio_config")).await;
-    let config_destination_hash = config_destination.lock().await.desc.address_hash;
-    log::info!("created radio config destination: {config_destination_hash}");
+    let config_destination_hash = match kaonic_config_destination.as_ref() {
+      Some(config_destination) =>
+        Some(config_destination.lock().await.desc.address_hash),
+      None => None
+    };
     // send announces
     let announce_loop = async || loop {
       transport.send_announce(&data_destination, None).await;
-      transport.send_announce(&config_destination, None).await;
+      if let Some(config_destination) = kaonic_config_destination.as_ref() {
+        transport.send_announce(&config_destination, None).await;
+      }
       time::sleep(time::Duration::from_secs(2)).await;
     };
     // link variables
-    let data_link_id: Arc<tokio::sync::Mutex<Option<LinkId>>> =
-      Arc::new(tokio::sync::Mutex::new(None));
-    let config_link_id: Arc<tokio::sync::Mutex<Option<LinkId>>> =
-      Arc::new(tokio::sync::Mutex::new(None));
+    let data_link_id: Arc<Mutex<Option<LinkId>>> = Arc::new(Mutex::new(None));
+    let config_link_id: Arc<Mutex<Option<LinkId>>> = Arc::new(Mutex::new(None));
     // search for ground station on network at gc_udp_port
     // TODO: would be nice to use mdns here but mdns crate didn't seem to work
     // TODO: after the ground station is found the address will be set until the service
@@ -173,6 +172,7 @@ impl Gc {
                     // TODO: socket send and ack reply in parallel?
                     // data packet
                     if self.received.lock().await.insert(seqnum) {
+                      log::trace!("got data packet seqnum {seqnum}");
                       match socket.send_to(&payload.as_slice()[8..], target).await {
                         Ok(n) => log::trace!("socket sent {n} bytes"),
                         Err(err) => {
@@ -180,6 +180,8 @@ impl Gc {
                           break
                         }
                       }
+                    } else {
+                      log::trace!("got duplicate data packet seqnum {seqnum}");
                     }
                     // send ack
                     if let Some(link) = transport.find_in_link(&link_event.id).await {
@@ -196,24 +198,25 @@ impl Gc {
                     }
                   } else {
                     // ack packet
+                    log::trace!("got ack for seqnum {seqnum}");
                     self.mavlink_buffer.lock().await.ack(Seqnum(seqnum));
                   }
                 }
                 LinkEvent::Activated => {
                   log::info!("data link activated {}", link_event.id);
                   let mut link_id = data_link_id.lock().await;
-                  *link_id = Some(link_event.id);
-                  self.received.lock().await.clear();
                   self.mavlink_buffer.lock().await.clear();
+                  self.received.lock().await.clear();
+                  *link_id = Some(link_event.id);
                 }
                 LinkEvent::Closed => {
                   log::info!("data link closed {}", link_event.id);
                   let _ = data_link_id.lock().await.take();
-                  self.received.lock().await.clear();
                   self.mavlink_buffer.lock().await.clear();
+                  self.received.lock().await.clear();
                 }
               }
-            } else if link_event.address_hash == config_destination_hash {
+            } else if Some(link_event.address_hash) == config_destination_hash {
               // config link event
               match link_event.event {
                 LinkEvent::Data(payload) => {
@@ -250,10 +253,10 @@ impl Gc {
             }
           }
           Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-            log::warn!("link lagged: {n}");
+            log::debug!("recv in link event lagged: {n}");
           }
           Err(err) => {
-            log::error!("link error: {err:?}");
+            log::error!("recv in link event error: {err:?}");
             break
           }
         }
@@ -274,7 +277,7 @@ impl Gc {
             // get the RTT to calculate timeout
             let link = link.lock().await;
             let rtt = *link.rtt();
-            let timeout = (rtt * 3) / 2;  // * 1.5
+            let timeout = (rtt * 3) / 2;
             // re-transmit
             let retransmit = self.mavlink_buffer.lock().await.retransmit(timeout);
             let packets = retransmit.into_iter().map(|payload|
@@ -288,11 +291,13 @@ impl Gc {
             ).collect::<Vec<_>>();
             drop(link); // drop to prevent deadlock
             let npackets = packets.len();
-            log::debug!("re-sending {npackets} messages");
-            for packet in packets {
-              transport.send_packet(packet).await;
+            if npackets > 0 {
+              log::trace!("re-sending {npackets} messages");
+              for packet in packets {
+                transport.send_packet(packet).await;
+              }
+              resend_counter += npackets;
             }
-            resend_counter += npackets;
             rtt / 2
           } else {
             log::error!("could not find data link ({link_id})");
@@ -305,9 +310,15 @@ impl Gc {
           time::sleep(default_sleep).await;
         }
         if debug_ts.elapsed() >= time::Duration::from_secs(2) {
-          log::debug!("current seqnum (num resends): {} ({resend_counter})",
-            self.mavlink_buffer.lock().await.sequence.0);
-          log::debug!("received count: {}", self.received.lock().await.len());
+          let (current_seqnum, pending_ack_count) = {
+            let mavlink_buffer = self.mavlink_buffer.lock().await;
+            (mavlink_buffer.sequence.0, mavlink_buffer.buffer().len())
+          };
+          let received_count = self.received.lock().await.len();
+          log::debug!(
+            "retransmit loop: pending_ack_count={pending_ack_count}, \
+              current_seqnum={current_seqnum}, resend_counter={resend_counter}, \
+              received_count={received_count}");
           debug_ts = time::Instant::now();
         }
       }

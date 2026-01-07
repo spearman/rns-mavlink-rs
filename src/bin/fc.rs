@@ -50,6 +50,9 @@ async fn main() {
   log::info!("starting reticulum");
   let id = PrivateIdentity::new_from_name("mavlink-rns-fc");
   let transport = Transport::new(TransportConfig::new("fc", &id, true));
+  let destination = SingleInputDestination::new(id,
+    DestinationName::new("rns_mavlink", "fc"));
+  log::info!("created destination: {}", destination.desc.address_hash);
   let maybe_config_tx = if let Some(address) = cmd.kaonic_grpc_address.as_ref() {
     // kaonic
     log::info!("creating RNS kaonic interface with kaonic grpc address {}", address);
@@ -70,9 +73,6 @@ async fn main() {
       UdpInterface::spawn);
     None
   };
-  let destination = SingleInputDestination::new(id,
-    DestinationName::new("rns_mavlink", "fc"));
-  log::info!("created destination: {}", destination.desc.address_hash);
   // mavlink bridge
   let mut fc = match rns_mavlink::Fc::new(config, maybe_config_tx) {
     Ok(fc) => fc,

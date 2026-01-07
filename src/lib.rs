@@ -17,6 +17,7 @@ pub(crate) struct MavlinkBuffer {
 /// the new transmission time.
 pub(crate) struct Message {
   pub ts: Instant,
+  pub retries: u32,
   pub data: Vec<u8>
 }
 
@@ -31,7 +32,6 @@ impl MavlinkBuffer {
     }
   }
 
-  /// Clears the buffer leaving sequence number unchanged
   pub fn buffer(&self) -> &BTreeMap<Seqnum, Message> {
     &self.buffer
   }
@@ -49,7 +49,7 @@ impl MavlinkBuffer {
   pub fn push(&mut self, data: Vec<u8>) -> (Seqnum, Vec<u8>) {
     let seq = self.sequence;
     let ts = Instant::now();
-    let msg = Message { ts, data };
+    let msg = Message { ts, data, retries: 0 };
     let payload = msg.payload(seq);
     self.buffer.insert(seq, msg);
     self.sequence.0 += 1;
@@ -60,11 +60,14 @@ impl MavlinkBuffer {
   pub fn retransmit(&mut self, timeout: Duration) -> Vec<Vec<u8>> {
     let now = Instant::now();
     self.buffer.iter_mut().filter_map(|(seqnum, message)|{
-      let retransmit = now - message.ts >= timeout;
+      let retransmit = now - message.ts >= (timeout * 2u32.pow(message.retries));
       if retransmit {
         message.ts = now;
+        message.retries += 1;
+        Some(message.payload(*seqnum))
+      } else {
+        None
       }
-      Some(message.payload(*seqnum))
     }).collect()
   }
 }
