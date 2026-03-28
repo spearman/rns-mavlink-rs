@@ -1,8 +1,6 @@
 use std::net;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use range_set::RangeSet;
 use serde::Deserialize;
 use tokio;
 use tokio::net::UdpSocket;
@@ -15,12 +13,8 @@ use reticulum::iface::kaonic::RadioConfig;
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
-use crate::{MavlinkBuffer, Seqnum};
-
 pub struct Gc {
-  config: Config,
-  mavlink_buffer: Arc<Mutex<MavlinkBuffer>>,
-  received: Arc<Mutex<RangeSet<[RangeInclusive<u64>; 4]>>>
+  config: Config
 }
 
 #[derive(Deserialize)]
@@ -41,9 +35,7 @@ pub enum Error {
 
 impl Gc {
   pub fn new(config: Config) -> Self {
-    let mavlink_buffer = Arc::new(Mutex::new(MavlinkBuffer::new()));
-    let received = Arc::new(Mutex::new(RangeSet::new()));
-    Gc { config, mavlink_buffer, received }
+    Gc { config }
   }
 
   pub async fn run(&self,
@@ -124,10 +116,8 @@ impl Gc {
               if let Some(link) = transport.find_in_link(link_id).await {
                 // if the link is active, forward to flight controller
                 let link = link.lock().await;
-                let (seqnum, payload) = self.mavlink_buffer.lock().await
-                  .push(data.to_vec());
-                log::trace!("sending seq[{}] on link ({link_id})", seqnum.0);
-                match link.data_packet(&payload[..]) {
+                log::trace!("sending data on link ({link_id})");
+                match link.data_packet(data) {
                   Ok(packet) => {
                     drop(link); // drop to prevent deadlock
                     transport.send_packet(packet).await;
@@ -165,55 +155,22 @@ impl Gc {
               match link_event.event {
                 LinkEvent::Data(payload) => {
                   log::trace!("data link {} payload ({})", link_event.id, payload.len());
-                  // parse payload: [seqnum, data]
-                  let seqnum =
-                    u64::from_be_bytes(payload.as_slice()[0..8].try_into().unwrap());
-                  if payload.len() > 8 {
-                    // TODO: socket send and ack reply in parallel?
-                    // data packet
-                    if self.received.lock().await.insert(seqnum) {
-                      log::trace!("got data packet seqnum {seqnum}");
-                      match socket.send_to(&payload.as_slice()[8..], target).await {
-                        Ok(n) => log::trace!("socket sent {n} bytes"),
-                        Err(err) => {
-                          log::error!("socket error sending bytes: {err:?}");
-                          break
-                        }
-                      }
-                    } else {
-                      log::trace!("got duplicate data packet seqnum {seqnum}");
+                  match socket.send_to(&payload.as_slice(), target).await {
+                    Ok(n) => log::trace!("socket sent {n} bytes"),
+                    Err(err) => {
+                      log::error!("socket error sending bytes: {err:?}");
+                      break
                     }
-                    // send ack
-                    if let Some(link) = transport.find_in_link(&link_event.id).await {
-                      let link = link.lock().await;
-                      match link.data_packet(&seqnum.to_be_bytes()[..]) {
-                        Ok(packet) => {
-                          drop(link); // drop to prevent deadlock
-                          transport.send_packet(packet).await;
-                        }
-                        Err(err) => log::error!("error creating ack packet: {err:?}")
-                      }
-                    } else {
-                      log::error!("could not find link for ack")
-                    }
-                  } else {
-                    // ack packet
-                    log::trace!("got ack for seqnum {seqnum}");
-                    self.mavlink_buffer.lock().await.ack(Seqnum(seqnum));
                   }
                 }
                 LinkEvent::Activated => {
                   log::info!("data link activated {}", link_event.id);
                   let mut link_id = data_link_id.lock().await;
-                  self.mavlink_buffer.lock().await.clear();
-                  self.received.lock().await.clear();
                   *link_id = Some(link_event.id);
                 }
                 LinkEvent::Closed => {
                   log::info!("data link closed {}", link_event.id);
                   let _ = data_link_id.lock().await.take();
-                  self.mavlink_buffer.lock().await.clear();
-                  self.received.lock().await.clear();
                 }
                 LinkEvent::Proof(_) => {}
               }
@@ -264,72 +221,10 @@ impl Gc {
         }
       }
     };
-    // re-send un-acked messages after a timeout
-    let retransmit_loop = async || {
-      let default_sleep = time::Duration::from_millis(100);
-      let mut debug_ts = time::Instant::now();
-      let mut resend_counter = 0;
-      loop {
-        let link_id_guard = data_link_id.lock().await;
-        if let Some(link_id) = link_id_guard.as_ref() {
-          let sleep_for = if self.mavlink_buffer.lock().await.buffer().is_empty() {
-            // no messages to re-transmit
-            default_sleep
-          } else if let Some(link) = transport.find_in_link(link_id).await {
-            // get the RTT to calculate timeout
-            let link = link.lock().await;
-            let rtt = *link.rtt();
-            let timeout = (rtt * 3) / 2;
-            // re-transmit
-            let retransmit = self.mavlink_buffer.lock().await.retransmit(timeout);
-            let packets = retransmit.into_iter().map(|payload|
-              match link.data_packet(payload.as_slice()) {
-                Ok(packet) => packet,
-                Err(err) => {
-                  log::error!("error creating re-transmit packet: {err:?}");
-                  panic!("error creating re-transmit packet: {err:?}")
-                }
-              }
-            ).collect::<Vec<_>>();
-            drop(link); // drop to prevent deadlock
-            let npackets = packets.len();
-            if npackets > 0 {
-              log::trace!("re-sending {npackets} messages");
-              for packet in packets {
-                transport.send_packet(packet).await;
-              }
-              resend_counter += npackets;
-            }
-            rtt / 2
-          } else {
-            log::error!("could not find data link ({link_id})");
-            default_sleep
-          };
-          drop(link_id_guard);
-          time::sleep(sleep_for).await;
-        } else {
-          drop(link_id_guard);
-          time::sleep(default_sleep).await;
-        }
-        if debug_ts.elapsed() >= time::Duration::from_secs(2) {
-          let (current_seqnum, pending_ack_count) = {
-            let mavlink_buffer = self.mavlink_buffer.lock().await;
-            (mavlink_buffer.sequence.0, mavlink_buffer.buffer().len())
-          };
-          let received_count = self.received.lock().await.len();
-          log::debug!(
-            "retransmit loop: pending_ack_count={pending_ack_count}, \
-              current_seqnum={current_seqnum}, resend_counter={resend_counter}, \
-              received_count={received_count}");
-          debug_ts = time::Instant::now();
-        }
-      }
-    };
     tokio::select!{
       _ = announce_loop() => log::info!("announce loop exited: shutting down"),
       _ = socket_loop() => log::info!("socket loop exited: shutting down"),
       _ = link_event_loop() => log::info!("link event loop exited: shutting down"),
-      _ = retransmit_loop() => log::info!("retransmit loop exited: shutting down"),
       _ = tokio::signal::ctrl_c() => log::info!("got ctrl-c: shutting down")
     }
     Ok(())
