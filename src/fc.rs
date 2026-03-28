@@ -115,7 +115,7 @@ impl Fc {
                 for data in buf[..n].chunks(reticulum::packet::PACKET_MDU / 2) {
                   let mut lock = data_link.lock().await;
                   if let Some(link_mutex) = lock.take() {
-                    let mut link = link_mutex.lock().await;
+                    let link = link_mutex.lock().await;
                     let status = link.status();
                     if status == LinkStatus::Closed {
                       log::info!("read port loop: data link is closed");
@@ -136,7 +136,8 @@ impl Fc {
                         }
                         Err(err) => {
                           log::error!("error creating data packet: {err:?}");
-                          link.close();
+                          let _ = transport.link_close(*link.id()).await.map_err(|err|
+                            log::warn!("error closing data link: {err:?}"));
                           break 'read_loop
                         }
                       }
@@ -220,6 +221,7 @@ impl Fc {
                   self.received.lock().await.clear();
                   self.mavlink_buffer.lock().await.clear();
                 }
+                LinkEvent::Proof(_) => {}
               }
             } else if link_event.address_hash == gc_config_destination {
               // handle radio config messages
@@ -257,11 +259,15 @@ impl Fc {
                           // the links will need to be re-created
                           if let Some(link) = data_link.lock().await.take() {
                             log::info!("closing data link");
-                            link.lock().await.close();
+                            let _ = transport.link_close(*link.lock().await.id()).await
+                              .map_err(|err|
+                                log::warn!("error closing data link: {err:?}"));
                           }
                           if let Some(link) = config_link.lock().await.take() {
                             log::info!("closing config link");
-                            link.lock().await.close();
+                            let _ = transport.link_close(*link.lock().await.id()).await
+                              .map_err(|err|
+                                log::warn!("error closing config link: {err:?}"));
                           }
                         } else {
                           log::error!("fc missing radio config tx channel");
@@ -283,6 +289,7 @@ impl Fc {
                   log::warn!("radio config link closed {}", link_event.id);
                   let _ = config_link.lock().await.take();
                 }
+                LinkEvent::Proof(_) => {}
               }
             }
           }

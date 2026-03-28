@@ -215,6 +215,7 @@ impl Gc {
                   self.mavlink_buffer.lock().await.clear();
                   self.received.lock().await.clear();
                 }
+                LinkEvent::Proof(_) => {}
               }
             } else if Some(link_event.address_hash) == config_destination_hash {
               // config link event
@@ -249,6 +250,7 @@ impl Gc {
                   log::info!("config link closed {}", link_event.id);
                   let _ = config_link_id.lock().await.take();
                 }
+                LinkEvent::Proof(_) => {}
               }
             }
           }

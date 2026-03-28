@@ -84,6 +84,7 @@ pub async fn run(transport: Transport) {
           log::warn!("link closed {}", link_event.id);
           let _ = link.lock().await.take();
         }
+        LinkEvent::Proof(_) => {}
       }
     }
   };
