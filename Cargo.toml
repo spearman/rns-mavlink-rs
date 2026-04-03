@@ -17,7 +17,4 @@ toml = "0.8.*"
 
 [dependencies.reticulum]
 git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs"
-#git = "https://github.com/spearman/Reticulum-rs"
-#path = "/home/spearman/rs/remote/Reticulum-rs"
-branch = "fix-retransmit-announces"
 version = "0.1.*"
