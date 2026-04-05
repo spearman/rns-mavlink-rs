@@ -1,6 +1,7 @@
 use std::net;
 use std::sync::Arc;
 
+use radio_common::RadioConfig;
 use serde::Deserialize;
 use tokio;
 use tokio::net::UdpSocket;
@@ -9,7 +10,6 @@ use tokio::time;
 
 use reticulum::destination::SingleInputDestination;
 use reticulum::destination::link::{LinkEvent, LinkId};
-use reticulum::iface::kaonic::RadioConfig;
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
@@ -25,6 +25,7 @@ pub struct Config {
   pub gc_reply_port: u16,
   // TODO: deserialize AddressHash
   pub fc_destination: String,
+  pub radio_module: usize,
   pub radio_config: RadioConfig
 }
 

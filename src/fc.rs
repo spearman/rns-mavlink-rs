@@ -1,20 +1,21 @@
 use std::sync::Arc;
 
+use radio_common::RadioConfig;
 use serde::{Deserialize, Serialize};
 use tokio;
 use tokio::time;
-use tokio::sync::mpsc;
 
 use reticulum::destination::link::{Link, LinkEvent, LinkStatus};
-use reticulum::iface::kaonic::{self, RadioConfig};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
+
+use crate::SharedRadioClient;
 
 pub const CONFIG_PATH: &str = "Fc.toml";
 
 pub struct Fc {
   config: Config,
-  radio_config_tx: Option<mpsc::Sender<kaonic::RadioConfig>>
+  radio_client: Option<SharedRadioClient>
 }
 
 #[derive(Deserialize, Serialize)]
@@ -26,7 +27,9 @@ pub struct Config {
   pub gc_data_destination: String,
   // TODO: deserialize AddressHash
   pub gc_radio_config_destination: String,
-  /// This will be overwritten if Gc changes config
+  /// This will be overwritten if Gc changes config.
+  pub radio_module: usize,
+  /// This will be overwritten if Gc changes config.
   pub radio_config: RadioConfig
 }
 
@@ -37,10 +40,10 @@ pub enum Error {
 }
 
 impl Fc {
-  pub fn new(config: Config, radio_config_tx: Option<mpsc::Sender<kaonic::RadioConfig>>)
+  pub fn new(config: Config, radio_client: Option<SharedRadioClient>)
     -> Result<Self, ()>
   {
-    let fc = Fc { config, radio_config_tx };
+    let fc = Fc { config, radio_client };
     Ok(fc)
   }
 
@@ -185,18 +188,21 @@ impl Fc {
                 LinkEvent::Data(payload) => {
                   log::trace!("radio config link {} payload ({})",
                     link_event.id, payload.len());
+                  // TODO: allow gc to specify radio module?
                   match serde_json::from_slice::<RadioConfig>(payload.as_slice()) {
                     Ok(radio_config) => {
                       if radio_config == self.config.radio_config {
                         log::info!("got gc radio config: matches current radio config");
                       } else {
                         log::info!("got gc radio config: updating radio config");
-                        if let Some(tx) = self.radio_config_tx.as_ref() {
+                        if let Some(radio_client) = self.radio_client.as_ref() {
                           self.config.radio_config = radio_config.clone();
-                          match tx.send(radio_config).await {
+                          match radio_client.lock().await
+                            .set_radio_config(self.config.radio_module, radio_config).await
+                          {
                             Ok(()) => {}
                             Err(err) => {
-                              log::error!("error sending radio config: {err}");
+                              log::error!("error sending radio config: {err:?}");
                               break
                             }
                           }

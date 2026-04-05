@@ -1,10 +1,9 @@
 use clap::Parser;
 use log;
-use tokio::sync::mpsc;
+use kaonic_reticulum::KaonicCtrlInterface;
 
 use reticulum::destination::{DestinationName, SingleInputDestination};
 use reticulum::identity::PrivateIdentity;
-use reticulum::iface::kaonic::kaonic_grpc::KaonicGrpc;
 use reticulum::iface::udp::UdpInterface;
 use reticulum::transport::{Transport, TransportConfig};
 
@@ -17,10 +16,10 @@ use rns_mavlink;
 pub struct Command {
   #[clap(short = 'a', long, group = "transport",
     required_unless_present = "udp_listen_port",
-    help = "Reticulum Kaonic gRPC address")]
-  pub kaonic_grpc_address: Option<String>,
+    help = "Reticulum kaonic-ctrl server UDP address")]
+  pub kaonic_ctrl_server: Option<std::net::SocketAddr>,
   #[clap(short = 'p', long, group = "transport",
-    required_unless_present = "kaonic_grpc_address",
+    required_unless_present = "kaonic_ctrl_server",
     help = "Reticulum UDP listen port")]
   pub udp_listen_port: Option<u16>,
   #[clap(short = 'f', long, requires = "udp_listen_port",
@@ -45,7 +44,6 @@ async fn main() {
   env_logger::Builder::from_env(env_logger::Env::default()
     .default_filter_or(&config.log_level)).init();
   log::info!("fc start");
-  let radio_config = config.radio_config.clone();
   // start reticulum
   log::info!("starting reticulum");
   let id = PrivateIdentity::new_from_name("mavlink-rns-fc");
@@ -53,14 +51,23 @@ async fn main() {
   let destination = SingleInputDestination::new(id,
     DestinationName::new("rns_mavlink", "fc"));
   log::info!("created destination: {}", destination.desc.address_hash);
-  let maybe_config_tx = if let Some(address) = cmd.kaonic_grpc_address.as_ref() {
+  let radio_client = if let Some(server_addr) = cmd.kaonic_ctrl_server.as_ref() {
     // kaonic
-    log::info!("creating RNS kaonic interface with kaonic grpc address {}", address);
-    let (config_tx, config_rx) = mpsc::channel(16);
+    log::info!("creating RNS kaonic interface with kaonic-ctrl server address {}",
+      server_addr);
+    let radio_client = match rns_mavlink::init_kaonic_radio_client(
+      *server_addr, config.radio_module, config.radio_config
+    ).await {
+      Ok(radio_client) => radio_client,
+      Err(err) => {
+        log::error!("error creating kaonic-ctrl radio client: {err:?}");
+        std::process::exit(1)
+      }
+    };
     let _ = transport.iface_manager().lock().await.spawn(
-      KaonicGrpc::new(address, radio_config, Some(config_rx)),
-      KaonicGrpc::spawn);
-    Some(config_tx)
+      KaonicCtrlInterface::new(radio_client.clone(), 0),
+      KaonicCtrlInterface::spawn);
+    Some(radio_client)
   } else {
     // udp
     let port = cmd.udp_listen_port.unwrap();
@@ -74,7 +81,7 @@ async fn main() {
     None
   };
   // mavlink bridge
-  let mut fc = match rns_mavlink::Fc::new(config, maybe_config_tx) {
+  let mut fc = match rns_mavlink::Fc::new(config, radio_client) {
     Ok(fc) => fc,
     Err(err) => {
       log::error!("error creating fc bridge: {:?}", err);

@@ -1,12 +1,12 @@
 use std::str;
 
 use clap::Parser;
+use kaonic_reticulum::KaonicCtrlInterface;
 use log;
 use toml;
 
 use reticulum::destination::DestinationName;
 use reticulum::identity::PrivateIdentity;
-use reticulum::iface::kaonic::kaonic_grpc::KaonicGrpc;
 use reticulum::iface::udp::UdpInterface;
 use reticulum::transport::{Transport, TransportConfig};
 
@@ -21,10 +21,10 @@ const CONFIG_PATH: &str = "Gc.toml";
 pub struct Command {
   #[clap(short = 'a', long, group = "transport",
     required_unless_present = "udp_listen_port",
-    help = "Reticulum Kaonic gRPC address")]
-  pub kaonic_grpc_address: Option<String>,
+    help = "Reticulum kaonic-ctrl server UDP address")]
+  pub kaonic_ctrl_server: Option<std::net::SocketAddr>,
   #[clap(short = 'p', long, group = "transport",
-    required_unless_present = "kaonic_grpc_address",
+    required_unless_present = "kaonic_ctrl_server",
     help = "Reticulum UDP listen port")]
   pub udp_listen_port: Option<u16>,
   #[clap(short = 'f', long, requires = "udp_listen_port",
@@ -57,16 +57,29 @@ async fn main() {
     DestinationName::new("rns_mavlink", "gc.mavlink_data")).await;
   log::info!("created data destination: {}",
     data_destination.lock().await.desc.address_hash);
-  let config_destination = if let Some(address) = cmd.kaonic_grpc_address.as_ref() {
+  let config_destination = if let Some(server_addr) =
+    cmd.kaonic_ctrl_server.as_ref()
+  {
     // kaonic
     let config_destination = transport.add_destination(id.clone(),
       DestinationName::new("rns_mavlink", "gc.radio_config")).await;
     log::info!("created radio config destination: {}",
       config_destination.lock().await.desc.address_hash);
-    log::info!("creating RNS kaonic interface with kaonic grpc address {}", address);
+
+    log::info!("creating RNS kaonic interface with kaonic-ctrl server address {}",
+      server_addr);
+    let radio_client = match rns_mavlink::init_kaonic_radio_client(
+      *server_addr, config.radio_module, config.radio_config
+    ).await {
+      Ok(radio_client) => radio_client,
+      Err(err) => {
+        log::error!("error creating kaonic-ctrl radio client: {err:?}");
+        std::process::exit(1)
+      }
+    };
     let _ = transport.iface_manager().lock().await.spawn(
-      KaonicGrpc::new(address, config.radio_config, None),
-      KaonicGrpc::spawn);
+      KaonicCtrlInterface::new(radio_client.clone(), 0),
+      KaonicCtrlInterface::spawn);
     Some(config_destination)
   } else {
     // udp
