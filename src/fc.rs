@@ -198,8 +198,10 @@ impl Fc {
                         log::info!("got gc radio config: updating radio config");
                         if let Some(radio_client) = self.radio_client.as_ref() {
                           self.config.radio_config = radio_config.clone();
+                          // TODO: set modulation
                           match radio_client.lock().await
-                            .set_radio_config(self.config.radio_module, radio_config).await
+                            .set_radio_config(self.config.radio_module, radio_config)
+                            .await
                           {
                             Ok(()) => {}
                             Err(err) => {

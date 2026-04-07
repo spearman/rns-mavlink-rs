@@ -10,5 +10,5 @@ radio_module = 0
 [radio_config]
 freq = 869535000          # Hz
 channel_spacing = 200000  # Hz
-channel = 10
+channel = 3
 bandwidth_filter = "Narrow"
