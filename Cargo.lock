@@ -339,6 +339,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc"
+version = "3.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9710d3b3739c2e349eb44fe848ad0b7c8cb1e42bd87ee49371df2f7acaf3e675"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
+
+[[package]]
 name = "crypto-common"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -894,6 +909,73 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaonic-ctrl"
+version = "0.1.1"
+source = "git+https://github.com/BeechatNetworkSystemsLtd/kaonic-radio#8eb5f4e90b8529b1794beeecd9681ba95a8b4b61"
+dependencies = [
+ "kaonic-frame",
+ "kaonic-net",
+ "log",
+ "radio-common",
+ "rand",
+ "rmp",
+ "rmp-serde",
+ "serde",
+ "serde_bytes",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kaonic-frame"
+version = "0.1.0"
+source = "git+https://github.com/BeechatNetworkSystemsLtd/kaonic-radio#8eb5f4e90b8529b1794beeecd9681ba95a8b4b61"
+dependencies = [
+ "crc",
+]
+
+[[package]]
+name = "kaonic-net"
+version = "0.1.0"
+source = "git+https://github.com/BeechatNetworkSystemsLtd/kaonic-radio#8eb5f4e90b8529b1794beeecd9681ba95a8b4b61"
+dependencies = [
+ "crc",
+ "kaonic-frame",
+ "labrador-ldpc",
+ "log",
+ "rand",
+]
+
+[[package]]
+name = "kaonic-reticulum"
+version = "0.1.0"
+source = "git+https://github.com/BeechatNetworkSystemsLtd/kaonic-gateway#9a757974a0d6cfd6617deaed35a02adcf49d20ee"
+dependencies = [
+ "kaonic-ctrl",
+ "kaonic-frame",
+ "log",
+ "radio-common",
+ "reticulum",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "labrador-ldpc"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52bbada3351e4ae9078bcd095b83eac3a0bc29ed7d63031f062830f8f22485a4"
+
+[[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
 name = "libc"
 version = "0.2.175"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1009,6 +1091,15 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+]
+
+[[package]]
+name = "nu-ansi-term"
+version = "0.50.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+dependencies = [
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1230,6 +1321,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
+name = "radio-common"
+version = "0.1.0"
+source = "git+https://github.com/BeechatNetworkSystemsLtd/kaonic-radio#8eb5f4e90b8529b1794beeecd9681ba95a8b4b61"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "rand"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
+dependencies = [
+ "rand_core",
+]
+
+[[package]]
 name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1314,17 +1422,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmp-serde"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52e599a477cf9840e92f2cde9a7189e67b42c57532749bf90aea6ec10facd4db"
+dependencies = [
+ "byteorder",
+ "rmp",
+ "serde",
+]
+
+[[package]]
 name = "rns-mavlink"
 version = "0.1.1"
 dependencies = [
  "clap",
  "env_logger 0.11.8",
+ "kaonic-ctrl",
+ "kaonic-reticulum",
  "log",
+ "radio-common",
  "reticulum",
  "serde",
  "serde_json",
  "tokio",
  "tokio-serial",
+ "tokio-util",
  "toml",
 ]
 
@@ -1388,6 +1511,16 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -1459,6 +1592,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]
@@ -1593,6 +1735,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thread_local"
+version = "1.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "tokio"
 version = "1.47.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1609,6 +1760,7 @@ dependencies = [
  "slab",
  "socket2 0.6.0",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.59.0",
 ]
 
@@ -1646,6 +1798,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -1805,6 +1958,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9d12581f227e93f094d3af2ae690a574abb8a2b9b7a96e7cfe9647b2b617678"
 dependencies = [
  "once_cell",
+ "valuable",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2054a14f5307d601f88daf0553e1cbf472acc4f2c51afab632431cdcd72124d5"
+dependencies = [
+ "nu-ansi-term",
+ "sharded-slab",
+ "smallvec",
+ "thread_local",
+ "tracing-core",
+ "tracing-log",
 ]
 
 [[package]]
@@ -1839,6 +2018,12 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+
+[[package]]
+name = "valuable"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "version_check"
