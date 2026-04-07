@@ -53,6 +53,7 @@ impl Gc {
     };
     // send announces
     let announce_loop = async || loop {
+      log::debug!("sending announce");
       transport.send_announce(&data_destination, None).await;
       if let Some(config_destination) = kaonic_config_destination.as_ref() {
         transport.send_announce(&config_destination, None).await;
