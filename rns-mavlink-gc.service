@@ -3,7 +3,7 @@ Description=Reticulum Mavlink Ground Control Daemon
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/rns-mavlink-gc -a 192.168.10.1:9090
+ExecStart=/usr/bin/rns-mavlink-gc -l 0.0.0.0:0 -a 192.168.10.1:9090
 WorkingDirectory=/home/root/rns-mavlink
 User=root
 Group=root
