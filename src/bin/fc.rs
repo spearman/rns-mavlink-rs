@@ -18,6 +18,9 @@ pub struct Command {
     required_unless_present = "udp_listen_port",
     help = "Reticulum kaonic-ctrl server UDP address")]
   pub kaonic_ctrl_server: Option<std::net::SocketAddr>,
+  #[clap(short = 'l', long, requires = "kaonic_ctrl_server",
+    help = "Reticulum kaonic-ctrl listen UDP address")]
+  pub kaonic_ctrl_listen: Option<std::net::SocketAddr>,
   #[clap(short = 'p', long, group = "transport",
     required_unless_present = "kaonic_ctrl_server",
     help = "Reticulum UDP listen port")]
@@ -53,10 +56,12 @@ async fn main() {
   log::info!("created destination: {}", destination.desc.address_hash);
   let radio_client = if let Some(server_addr) = cmd.kaonic_ctrl_server.as_ref() {
     // kaonic
-    log::info!("creating RNS kaonic interface with kaonic-ctrl server address {}",
-      server_addr);
+    let listen_addr = cmd.kaonic_ctrl_listen.as_ref()
+      .expect("required cmd parameter should be checked by parser");
+    log::info!("creating RNS kaonic interface with kaonic-ctrl listen address
+      {listen_addr} and server address {server_addr}");
     let radio_client = match rns_mavlink::init_kaonic_radio_client(
-      *server_addr, config.radio_module, config.radio_config
+      *listen_addr, *server_addr, config.radio_module, config.radio_config
     ).await {
       Ok(radio_client) => radio_client,
       Err(err) => {

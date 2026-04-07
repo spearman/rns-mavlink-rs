@@ -17,12 +17,13 @@ pub use gc::Gc;
 type SharedRadioClient = Arc<Mutex<RadioClient>>;
 
 pub async fn init_kaonic_radio_client(
+  listen_addr: std::net::SocketAddr,
   server_addr: std::net::SocketAddr,
   radio_module: usize,
   radio_config: RadioConfig,
 ) -> Result<SharedRadioClient, ControllerError> {
   match KaonicCtrlInterface::connect_client::<1400, 5>(
-    "0.0.0.0:0".parse().unwrap(), server_addr, CancellationToken::new()
+    listen_addr, server_addr, CancellationToken::new()
   ).await {
     Ok(radio_client) => {
       let mut client = radio_client.lock().await;
