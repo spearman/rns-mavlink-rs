@@ -70,7 +70,7 @@ async fn main() {
       }
     };
     let _ = transport.iface_manager().lock().await.spawn(
-      KaonicCtrlInterface::new(radio_client.clone(), 0),
+      KaonicCtrlInterface::new(radio_client.clone(), 0, None),
       KaonicCtrlInterface::spawn);
     Some(radio_client)
   } else {
