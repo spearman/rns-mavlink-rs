@@ -58,7 +58,7 @@ async fn main() {
     // kaonic
     let listen_addr = cmd.kaonic_ctrl_listen.as_ref()
       .expect("required cmd parameter should be checked by parser");
-    log::info!("creating RNS kaonic interface with kaonic-ctrl listen address
+    log::info!("creating RNS kaonic interface with kaonic-ctrl listen address \
       {listen_addr} and server address {server_addr}");
     let radio_client = match rns_mavlink::init_kaonic_radio_client(
       *listen_addr, *server_addr, config.radio_module, config.radio_config
@@ -70,7 +70,7 @@ async fn main() {
       }
     };
     let _ = transport.iface_manager().lock().await.spawn(
-      KaonicCtrlInterface::new(radio_client.clone(), 0),
+      KaonicCtrlInterface::new(radio_client.clone(), 0, None),
       KaonicCtrlInterface::spawn);
     Some(radio_client)
   } else {

@@ -31,3 +31,6 @@ version = "0.1.*"
 [dependencies.reticulum]
 git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs"
 version = "0.1.*"
+
+[patch."https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs"]
+reticulum = { git = "https://github.com/spearman/Reticulum-rs", branch = "main" }
