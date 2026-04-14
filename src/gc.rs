@@ -26,7 +26,10 @@ pub struct Config {
   // TODO: deserialize AddressHash
   pub fc_destination: String,
   pub radio_module: usize,
-  pub radio_config: RadioConfig
+  pub radio_config: RadioConfig,
+  /// Whether to announce radio config link
+  #[serde(default)]
+  pub radio_config_link: bool
 }
 
 #[derive(Debug)]

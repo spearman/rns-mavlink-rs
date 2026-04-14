@@ -64,10 +64,15 @@ async fn main() {
     cmd.kaonic_ctrl_server.as_ref()
   {
     // kaonic
-    let config_destination = transport.add_destination(id.clone(),
-      DestinationName::new("rns_mavlink", "gc.radio_config")).await;
-    log::info!("created radio config destination: {}",
-      config_destination.lock().await.desc.address_hash);
+    let maybe_config_destination = if config.radio_config_link {
+      let config_destination = transport.add_destination(id.clone(),
+        DestinationName::new("rns_mavlink", "gc.radio_config")).await;
+      log::info!("created radio config destination: {}",
+        config_destination.lock().await.desc.address_hash);
+      Some(config_destination)
+    } else {
+      None
+    };
 
     let listen_addr = cmd.kaonic_ctrl_listen.as_ref()
       .expect("required cmd parameter should be checked by parser");
@@ -85,13 +90,13 @@ async fn main() {
     let _ = transport.iface_manager().lock().await.spawn(
       KaonicCtrlInterface::new(radio_client.clone(), 0, None),
       KaonicCtrlInterface::spawn);
-    Some(config_destination)
+    maybe_config_destination
   } else {
     // udp
     let port = cmd.udp_listen_port.unwrap();
     let forward = cmd.udp_forward_address.unwrap();
-    log::info!("creating RNS UDP interface with listen \
-      port {port} and forward node {forward}");
+    log::info!("creating RNS UDP interface with listen port {port} and forward node \
+      {forward}");
     let _ = transport.iface_manager().lock().await.spawn(
     UdpInterface::new(format!("0.0.0.0:{}", cmd.udp_listen_port.unwrap()),
       Some(cmd.udp_forward_address.unwrap().to_string())),
