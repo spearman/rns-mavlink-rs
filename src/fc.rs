@@ -77,7 +77,6 @@ impl Fc {
       while let Ok(announce) = announce_recv.recv().await {
         let destination = announce.destination.lock().await;
         let address = destination.desc.address_hash;
-        log::debug!("got announce: {address}");
         if address == gc_data_destination {
           log::debug!("got gc data destination announce {address}");
           let mut data_link = data_link.lock().await;
@@ -92,6 +91,8 @@ impl Fc {
             log::info!("creating radio config link for {address}");
             *config_link = Some(transport.link(destination.desc).await);
           }
+        } else {
+          log::debug!("got announce: {address}");
         }
       }
     };
