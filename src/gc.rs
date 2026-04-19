@@ -87,9 +87,19 @@ impl Gc {
       }
       let address = net::SocketAddrV4::new(
         net::Ipv4Addr::new(subnet[0], subnet[1], subnet[2], n), self.config.gc_udp_port);
-      socket.send_to(b"", address).await.map_err(Error::IoError)?;
+      match socket.send_to(b"", address).await {
+        Ok(_) => {}
+        Err(err) => if err.kind() == std::io::ErrorKind::NetworkUnreachable {
+          // network may not yet be reachable
+          if t_search == now {
+            log::warn!("network unreachable");
+          }
+        } else {
+          return Err(Error::IoError(err))
+        }
+      }
       if let Ok(Ok((_, peer))) = tokio::time::timeout(
-        time::Duration::from_millis(50), socket.recv_from(&mut buf[..])
+        time::Duration::from_millis(100), socket.recv_from(&mut buf[..])
       ).await {
         log::info!("got ground station reply from {peer}");
         break peer
