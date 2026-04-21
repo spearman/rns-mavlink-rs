@@ -3,7 +3,6 @@ serial_port = "/dev/ttyACM0"
 #serial_port = "/dev/ttySTM1"
 serial_baud = 57600
 gc_data_destination = "32f0c4dc2a9f9bdee3897ccf82365bed"
-gc_radio_config_destination = "473762efed6c103c225aab977f25535b"
 
 radio_module = 0
 

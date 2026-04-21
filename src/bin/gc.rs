@@ -60,20 +60,8 @@ async fn main() {
     DestinationName::new("rns_mavlink", "gc.mavlink_data")).await;
   log::info!("created data destination: {}",
     data_destination.lock().await.desc.address_hash);
-  let config_destination = if let Some(server_addr) =
-    cmd.kaonic_ctrl_server.as_ref()
-  {
+  let radio_client = if let Some(server_addr) = cmd.kaonic_ctrl_server.as_ref() {
     // kaonic
-    let maybe_config_destination = if config.radio_config_link {
-      let config_destination = transport.add_destination(id.clone(),
-        DestinationName::new("rns_mavlink", "gc.radio_config")).await;
-      log::info!("created radio config destination: {}",
-        config_destination.lock().await.desc.address_hash);
-      Some(config_destination)
-    } else {
-      None
-    };
-
     let listen_addr = cmd.kaonic_ctrl_listen.as_ref()
       .expect("required cmd parameter should be checked by parser");
     log::info!("creating RNS kaonic interface with kaonic-ctrl listen address \
@@ -90,7 +78,7 @@ async fn main() {
     let _ = transport.iface_manager().lock().await.spawn(
       KaonicCtrlInterface::new(radio_client.clone(), 0, None),
       KaonicCtrlInterface::spawn);
-    maybe_config_destination
+    Some(radio_client)
   } else {
     // udp
     let port = cmd.udp_listen_port.unwrap();
@@ -104,8 +92,8 @@ async fn main() {
     None
   };
   // mavlink bridge
-  let gc = rns_mavlink::Gc::new(config);
-  if let Err(err) = gc.run(transport, data_destination, config_destination).await {
+  let gc = rns_mavlink::Gc::new(config, radio_client);
+  if let Err(err) = gc.run(transport, data_destination).await {
     log::error!("gc bridge exited with error: {:?}", err);
   } else {
     log::info!("gc exit");

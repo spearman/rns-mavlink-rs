@@ -13,9 +13,14 @@ use reticulum::destination::link::{LinkEvent, LinkId};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
+use crate::SharedRadioClient;
+
 pub struct Gc {
-  config: Config
+  config: Config,
+  radio_client: Option<SharedRadioClient>
 }
+
+const fn default_announce_interval_seconds() -> u64 { 2 }
 
 #[derive(Deserialize)]
 pub struct Config {
@@ -23,6 +28,8 @@ pub struct Config {
   pub gc_udp_subnet: net::Ipv4Addr,
   pub gc_udp_port: u16,
   pub gc_reply_port: u16,
+  #[serde(default="default_announce_interval_seconds")]
+  pub announce_interval_seconds: u64,
   // TODO: deserialize AddressHash
   pub fc_destination: String,
   pub radio_module: usize,
@@ -38,34 +45,40 @@ pub enum Error {
 }
 
 impl Gc {
-  pub fn new(config: Config) -> Self {
-    Gc { config }
+  pub fn new(config: Config, radio_client: Option<SharedRadioClient>) -> Self {
+    Gc { config, radio_client }
   }
 
   pub async fn run(&self,
     transport: Transport,
-    data_destination: Arc<Mutex<SingleInputDestination>>,
-    kaonic_config_destination: Option<Arc<Mutex<SingleInputDestination>>>
+    data_destination: Arc<Mutex<SingleInputDestination>>
   ) -> Result<(), Error> {
     log::info!("running gc");
     let data_destination_hash = data_destination.lock().await.desc.address_hash;
-    let config_destination_hash = match kaonic_config_destination.as_ref() {
-      Some(config_destination) =>
-        Some(config_destination.lock().await.desc.address_hash),
-      None => None
+    // ping radio client
+    let ping_radio_client_loop = async || {
+      loop {
+        if let Some(radio_client) = self.radio_client.as_ref() {
+          match radio_client.lock().await.ping().await {
+            Ok(()) => log::trace!("kaonic radio client ping ok"),
+            Err(err) => {
+              log::error!("kaonic radio client ping error: {err:?}");
+              break
+            }
+          }
+        }
+        time::sleep(time::Duration::from_secs(10)).await
+      }
     };
     // send announces
     let announce_loop = async || loop {
       log::debug!("sending announce");
       transport.send_announce(&data_destination, None).await;
-      if let Some(config_destination) = kaonic_config_destination.as_ref() {
-        transport.send_announce(&config_destination, None).await;
-      }
-      time::sleep(time::Duration::from_secs(2)).await;
+      time::sleep(time::Duration::from_secs(self.config.announce_interval_seconds))
+        .await;
     };
     // link variables
     let data_link_id: Arc<Mutex<Option<LinkId>>> = Arc::new(Mutex::new(None));
-    let config_link_id: Arc<Mutex<Option<LinkId>>> = Arc::new(Mutex::new(None));
     // search for ground station on network at gc_udp_port
     // TODO: would be nice to use mdns here but mdns crate didn't seem to work
     // TODO: after the ground station is found the address will be set until the service
@@ -189,41 +202,6 @@ impl Gc {
                 }
                 LinkEvent::Proof(_) => {}
               }
-            } else if Some(link_event.address_hash) == config_destination_hash {
-              // config link event
-              match link_event.event {
-                LinkEvent::Data(payload) => {
-                  log::trace!("config link {} payload ({})", link_event.id, payload.len());
-                  // current implementation does not expect to receive data on this link
-                  log::error!("TODO: handle config link replies");
-                  unimplemented!("TODO: handle config link replies")
-                }
-                LinkEvent::Activated => {
-                  log::info!("config link activated {}", link_event.id);
-                  let mut config_link_id = config_link_id.lock().await;
-                  *config_link_id = Some(link_event.id);
-                  // send config
-                  let config = serde_json::to_vec(&self.config.radio_config).unwrap();
-                  if let Some(link) = transport.find_in_link(&link_event.id).await {
-                    let link = link.lock().await;
-                    match link.data_packet(config.as_slice()) {
-                      Ok(packet) => {
-                        drop(link); // drop to prevent deadlock
-                        log::info!("sending radio config");
-                        transport.send_packet(packet).await;
-                      }
-                      Err(err) => log::error!("error creating config packet: {err:?}")
-                    }
-                  } else {
-                    log::error!("could not find config link ({})", link_event.id)
-                  }
-                }
-                LinkEvent::Closed => {
-                  log::info!("config link closed {}", link_event.id);
-                  let _ = config_link_id.lock().await.take();
-                }
-                LinkEvent::Proof(_) => {}
-              }
             }
           }
           Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -236,7 +214,10 @@ impl Gc {
         }
       }
     };
+    // run
     tokio::select!{
+      _ = ping_radio_client_loop() =>
+        log::info!("ping radio client loop exited: shutting down"),
       _ = announce_loop() => log::info!("announce loop exited: shutting down"),
       _ = socket_loop() => log::info!("socket loop exited: shutting down"),
       _ = link_event_loop() => log::info!("link event loop exited: shutting down"),
