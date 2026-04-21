@@ -79,85 +79,100 @@ impl Gc {
     };
     // link variables
     let data_link_id: Arc<Mutex<Option<LinkId>>> = Arc::new(Mutex::new(None));
-    // search for ground station on network at gc_udp_port
-    // TODO: would be nice to use mdns here but mdns crate didn't seem to work
-    // TODO: after the ground station is found the address will be set until the service
-    // restarts, can we detect disconnection and change of address ?
+    let ground_station_address = Arc::new(Mutex::new(None));
+    // listen for packets from ground control station
     log::info!("creating ground control UDP reply socket for port {}",
       self.config.gc_reply_port);
-    let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.gc_reply_port))
-      .await.map_err(Error::IoError)?;
-    let mut n = 2;
-    let mut buf = vec![0; 64];
-    let mut t_search = time::Instant::now() - time::Duration::from_secs (5);
-    let ground_station_address = loop {
-      let subnet = self.config.gc_udp_subnet.octets();
-      let now = time::Instant::now();
-      if now - t_search >= time::Duration::from_secs (5) {
-        log::info!("searching for ground station on subnet {}.{}.{}.0/24 at port {}",
-          subnet[0], subnet[1], subnet[2], self.config.gc_udp_port);
-        t_search = now;
-      }
-      let address = net::SocketAddrV4::new(
-        net::Ipv4Addr::new(subnet[0], subnet[1], subnet[2], n), self.config.gc_udp_port);
-      match socket.send_to(b"", address).await {
-        Ok(_) => {}
-        Err(err) => if err.kind() == std::io::ErrorKind::NetworkUnreachable {
-          // network may not yet be reachable
-          if t_search == now {
-            log::warn!("network unreachable");
-          }
-        } else {
-          return Err(Error::IoError(err))
-        }
-      }
-      if let Ok(Ok((_, peer))) = tokio::time::timeout(
-        time::Duration::from_millis(100), socket.recv_from(&mut buf[..])
-      ).await {
-        log::info!("got ground station reply from {peer}");
-        break peer
-      }
-      n += 1;
-      if n == 255 {
-        n = 2;
-      }
-    };
-    // listen for packets from ground control station
+    let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.gc_reply_port)).await
+      .map_err(Error::IoError)?;
     let socket_loop = async || {
-      log::info!("listening for UDP packets on port {}",
-        socket.local_addr().unwrap().port());
-      let mut buf = vec![0u8; 1024];
+      let ground_station_timeout = time::Duration::from_secs(10);
       loop {
-        match socket.recv_from(&mut buf).await {
-          Ok((size, src)) => {
-            if size == 0 {
-              log::warn!("zero size UDP packet data");
-              continue
+        {
+          // search for ground station on network at gc_udp_port
+          // TODO: would be nice to use mdns here but mdns crate didn't seem to work
+          let mut n = 2;  // iterate over addresses
+          let mut buf = vec![0; 64];
+          let mut t_search = time::Instant::now() - time::Duration::from_secs (5);
+          loop {
+            let subnet = self.config.gc_udp_subnet.octets();
+            let now = time::Instant::now();
+            if now - t_search >= time::Duration::from_secs (5) {
+              log::info!("searching for ground station on subnet {}.{}.{}.0/24 at port {}",
+                subnet[0], subnet[1], subnet[2], self.config.gc_udp_port);
+              t_search = now;
             }
-            let data = &buf[..size];
-            match str::from_utf8(data) {
-              Ok(text) => log::trace!("received from {}: {}", src, text),
-              Err(_) => log::trace!("received non-UTF8 data from {}: {:?}", src, data),
-            }
-            let link_id = data_link_id.lock().await;
-            if let Some(link_id) = link_id.as_ref() {
-              if let Some(link) = transport.find_in_link(link_id).await {
-                // if the link is active, forward to flight controller
-                let link = link.lock().await;
-                log::trace!("sending data on link ({link_id})");
-                match link.data_packet(data) {
-                  Ok(packet) => {
-                    drop(link); // drop to prevent deadlock
-                    transport.send_packet(packet).await;
-                  }
-                  Err(err) => log::error!("error creating data packet: {err:?}")
+            let address = net::SocketAddrV4::new(
+              net::Ipv4Addr::new(subnet[0], subnet[1], subnet[2], n), self.config.gc_udp_port);
+            match socket.send_to(b"", address).await {
+              Ok(_) => {}
+              Err(err) => if err.kind() == std::io::ErrorKind::NetworkUnreachable {
+                // network may not yet be reachable
+                if t_search == now {
+                  log::warn!("network unreachable");
                 }
               } else {
-                log::error!("could not find data link ({link_id})")
+                log::error!("error searching for ground station: {err}");
+                return
               }
             }
+            if let Ok(Ok((_, peer))) = tokio::time::timeout(
+              time::Duration::from_millis(50), socket.recv_from(&mut buf[..])
+            ).await {
+              log::info!("got ground station reply from {peer}");
+              *ground_station_address.lock().await = Some(peer);
+              break
+            }
+            n += 1;
+            if n == 255 {
+              n = 2;
+            }
           }
-          Err(e) => log::error!("error receiving packet: {e}")
+        }
+        log::info!("listening for UDP packets on port {}",
+          socket.local_addr().unwrap().port());
+        let mut buf = [0u8; 2usize.pow(16)];
+        loop {
+          // read socket
+          match tokio::time::timeout(ground_station_timeout, socket.recv_from(&mut buf))
+            .await
+          {
+            Ok(Ok((size, src))) => {
+              if size == 0 {
+                log::warn!("zero size UDP packet data");
+                continue
+              }
+              let data = &buf[..size];
+              match str::from_utf8(data) {
+                Ok(text) => log::trace!("received from {}: {}", src, text),
+                Err(_) => log::trace!("received non-UTF8 data from {}: {:?}", src, data),
+              }
+              let link_id = data_link_id.lock().await;
+              if let Some(link_id) = link_id.as_ref() {
+                if let Some(link) = transport.find_in_link(link_id).await {
+                  // if the link is active, forward to flight controller
+                  let link = link.lock().await;
+                  log::trace!("sending data on link ({link_id})");
+                  match link.data_packet(data) {
+                    Ok(packet) => {
+                      drop(link); // drop to prevent deadlock
+                      transport.send_packet(packet).await;
+                    }
+                    Err(err) => log::error!("error creating data packet: {err:?}")
+                  }
+                } else {
+                  log::error!("could not find data link ({link_id})")
+                }
+              }
+            }
+            Ok(Err(e)) => log::error!("error receiving packet: {e}"),
+            Err(_) => {
+              log::warn!("ground station socket no data received in \
+                {ground_station_timeout:?}, assumed disconnected");
+              let _ = ground_station_address.lock().await.take();
+              break
+            }
+          }
         }
       }
     };
@@ -172,7 +187,6 @@ impl Gc {
           }
         };
       let mut in_link_events = transport.in_link_events();
-      let target = ground_station_address;
       loop {
         match in_link_events.recv().await {
           Ok(link_event) => {
@@ -183,12 +197,17 @@ impl Gc {
               match link_event.event {
                 LinkEvent::Data(payload) => {
                   log::trace!("data link {} payload ({})", link_event.id, payload.len());
-                  match socket.send_to(&payload.as_slice(), target).await {
-                    Ok(n) => log::trace!("socket sent {n} bytes"),
-                    Err(err) => {
-                      log::error!("socket error sending bytes: {err:?}");
-                      break
+                  if let Some(target) = ground_station_address.lock().await.clone() {
+                    log::trace!("send payload ({}) to {target}", payload.len());
+                    match socket.send_to(&payload.as_slice(), target).await {
+                      Ok(n) => log::trace!("socket sent {n} bytes"),
+                      Err(err) => {
+                        log::error!("socket error sending bytes: {err:?}");
+                        break
+                      }
                     }
+                  } else {
+                    log::trace!("dropping payload: no ground station address");
                   }
                 }
                 LinkEvent::Activated => {
