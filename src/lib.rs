@@ -4,7 +4,6 @@ use kaonic_ctrl::error::ControllerError;
 use kaonic_reticulum::KaonicCtrlInterface;
 use kaonic_reticulum::RadioClient;
 use radio_common::{RadioConfig, Modulation};
-use radio_common::modulation::OfdmModulation;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -21,6 +20,7 @@ pub async fn init_kaonic_radio_client(
   server_addr: std::net::SocketAddr,
   radio_module: usize,
   radio_config: RadioConfig,
+  radio_modulation: Modulation
 ) -> Result<SharedRadioClient, ControllerError> {
   match KaonicCtrlInterface::connect_client::<1400, 5>(
     listen_addr, server_addr, CancellationToken::new()
@@ -28,8 +28,7 @@ pub async fn init_kaonic_radio_client(
     Ok(radio_client) => {
       let mut client = radio_client.lock().await;
       client.set_radio_config(radio_module, radio_config).await?;
-      let modulation = Modulation::Ofdm(OfdmModulation::default());
-      client.set_modulation(radio_module, modulation).await?;
+      client.set_modulation(radio_module, radio_modulation).await?;
       drop(client);
       Ok(radio_client)
     }

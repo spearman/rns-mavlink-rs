@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use radio_common::RadioConfig;
+use radio_common::{Modulation, RadioConfig};
+use radio_common::modulation::OfdmModulation;
 use serde::{Deserialize, Serialize};
 use tokio;
 use tokio::time;
@@ -20,6 +21,10 @@ pub const CONFIG_PATH: &str = "Fc.toml";
 const SERIAL_PORT_READ_0_BYTES_LIMIT: usize = 30;
 const DATA_LINK_REQUEST_TIMEOUT_SECONDS: u64 = 15;
 
+fn default_radio_modulation() -> Modulation {
+  Modulation::Ofdm(OfdmModulation::default())
+}
+
 pub struct Fc {
   config: Config,
   radio_client: Option<SharedRadioClient>
@@ -33,7 +38,9 @@ pub struct Config {
   // TODO: deserialize AddressHash
   pub gc_data_destination: String,
   pub radio_module: usize,
-  pub radio_config: RadioConfig
+  pub radio_config: RadioConfig,
+  #[serde(default="default_radio_modulation")]
+  pub radio_modulation: Modulation
 }
 
 #[derive(Debug)]

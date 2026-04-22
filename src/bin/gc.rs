@@ -67,7 +67,8 @@ async fn main() {
     log::info!("creating RNS kaonic interface with kaonic-ctrl listen address \
       {listen_addr} and server address {server_addr}");
     let radio_client = match rns_mavlink::init_kaonic_radio_client(
-      *listen_addr, *server_addr, config.radio_module, config.radio_config
+      *listen_addr, *server_addr, config.radio_module, config.radio_config,
+      config.radio_modulation
     ).await {
       Ok(radio_client) => radio_client,
       Err(err) => {

@@ -1,7 +1,8 @@
 use std::net;
 use std::sync::Arc;
 
-use radio_common::RadioConfig;
+use radio_common::{Modulation, RadioConfig};
+use radio_common::modulation::OfdmModulation;
 use serde::Deserialize;
 use tokio;
 use tokio::net::UdpSocket;
@@ -22,6 +23,10 @@ pub struct Gc {
 
 const fn default_announce_interval_seconds() -> u64 { 5 }
 
+fn default_radio_modulation() -> Modulation {
+  Modulation::Ofdm(OfdmModulation::default())
+}
+
 #[derive(Deserialize)]
 pub struct Config {
   pub log_level: String,
@@ -34,6 +39,8 @@ pub struct Config {
   pub fc_destination: String,
   pub radio_module: usize,
   pub radio_config: RadioConfig,
+  #[serde(default="default_radio_modulation")]
+  pub radio_modulation: Modulation,
   /// Whether to announce radio config link
   #[serde(default)]
   pub radio_config_link: bool
@@ -79,7 +86,7 @@ impl Gc {
         .await;
       if let Some(link_id) = data_link_id.lock().await.as_ref() {
         if let Some(link) = transport.find_in_link(link_id).await {
-          let status = link.lock().await.status()
+          let status = link.lock().await.status();
           match status {
             // the link_id should only be set by the LinkActivated event; the link
             // should never become pending or handshake after this event
