@@ -79,9 +79,15 @@ impl Gc {
         .await;
       if let Some(link_id) = data_link_id.lock().await.as_ref() {
         if let Some(link) = transport.find_in_link(link_id).await {
-          if link.lock().await.status() == LinkStatus::Closed {
-            log::warn!("data link is closed, discarding link");
-            *data_link_id.lock().await = None;
+          let status = link.lock().await.status()
+          match status {
+            // the link_id should only be set by the LinkActivated event; the link
+            // should never become pending or handshake after this event
+            LinkStatus::Closed |  LinkStatus::Pending | LinkStatus::Handshake => {
+              log::warn!("data link is not open {status:?}, discarding link");
+              *data_link_id.lock().await = None;
+            }
+            _ => {}
           }
         } else {
           log::error!("could not find link {link_id}");
