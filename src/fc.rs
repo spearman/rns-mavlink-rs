@@ -4,6 +4,7 @@ use radio_common::RadioConfig;
 use serde::{Deserialize, Serialize};
 use tokio;
 use tokio::time;
+use tokio::sync::Mutex;
 
 use reticulum::destination::link::{Link, LinkEvent, LinkStatus};
 use reticulum::transport::Transport;
@@ -12,6 +13,12 @@ use reticulum::hash::AddressHash;
 use crate::SharedRadioClient;
 
 pub const CONFIG_PATH: &str = "Fc.toml";
+/// When the fc is disconnected the port will read 0 bytes and reconnecting the
+/// controller does not always restore the data stream because it may be assigned to a
+/// different serial device in `/dev/`. If we detect this is happening then shut down
+/// the flight controller.
+const SERIAL_PORT_READ_0_BYTES_LIMIT: usize = 30;
+const DATA_LINK_REQUEST_TIMEOUT_SECONDS: u64 = 15;
 
 pub struct Fc {
   config: Config,
@@ -47,8 +54,8 @@ impl Fc {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_serial::SerialPortBuilderExt;
     log::info!("running fc");
-    type MaybeLink = Arc<tokio::sync::Mutex<Option<Arc<tokio::sync::Mutex<Link>>>>>;
-    let data_link: MaybeLink = Arc::new(tokio::sync::Mutex::new(None));
+    type MaybeLink = Arc<Mutex<Option<Arc<Mutex<Link>>>>>;
+    let data_link: MaybeLink = Arc::new(Mutex::new(None));
     let parse_destination_hash = |hash, name|
       AddressHash::new_from_hex_string(hash).map_err(|err|{
         log::error!("error parsing ground control {name} destination hash: {err:?}");
@@ -79,78 +86,97 @@ impl Fc {
       }
     };
     // set up links
+    let data_link_request_ts: Arc<Mutex<Option<time::Instant>>> =
+      Arc::new(Mutex::new(None));
     let link_loop = async || {
+      const ANNOUNCE_RECV_TIMEOUT: time::Duration = time::Duration::from_secs(5);
       let mut announce_recv = transport.recv_announces().await;
-      while let Ok(announce) = announce_recv.recv().await {
-        let destination = announce.destination.lock().await;
-        let address = destination.desc.address_hash;
-        if address == gc_data_destination {
-          log::debug!("got gc data destination announce {address}");
-          let mut data_link = data_link.lock().await;
-          if data_link.is_none() {
-            log::info!("creating data link for {address}");
-            *data_link = Some(transport.link(destination.desc).await);
+      let check_status = async || {
+        if let Some(link) = data_link.lock().await.as_ref() {
+          if link.lock().await.status() == LinkStatus::Closed {
+            log::warn!("data link is closed, discarding link");
+            *data_link.lock().await = None;
+            *data_link_request_ts.lock().await = None;
           }
-        } else {
-          log::debug!("got announce: {address}");
+        }
+        if let Some(link_request_ts) = data_link_request_ts.lock().await.as_ref() {
+          if link_request_ts.elapsed() >
+            time::Duration::from_secs (DATA_LINK_REQUEST_TIMEOUT_SECONDS)
+          {
+            log::warn!("requested data link still not active after \
+              {DATA_LINK_REQUEST_TIMEOUT_SECONDS} seconds, discarding link");
+            *data_link.lock().await = None;
+            *data_link_request_ts.lock().await = None;
+          }
+        }
+      };
+      loop {
+        match time::timeout(ANNOUNCE_RECV_TIMEOUT, announce_recv.recv()).await {
+          Ok(Ok(announce)) => {
+            check_status().await;
+            let destination = announce.destination.lock().await;
+            let address = destination.desc.address_hash;
+            if address == gc_data_destination {
+              log::debug!("got gc data destination announce {address}");
+              let mut data_link = data_link.lock().await;
+              if data_link.is_none() {
+                log::info!("creating data link for {address}");
+                *data_link = Some(transport.link(destination.desc).await);
+                *data_link_request_ts.lock().await = Some(time::Instant::now());
+              }
+            } else {
+              log::debug!("got announce: {address}");
+            }
+          }
+          Ok(Err(err)) => {
+            log::error!("error receiving announces: {err}");
+            break
+          }
+          Err(_) => check_status().await
         }
       }
     };
     // read serial port and forward to links
     let mut read_port_loop = async || {
-      let mut debug_ts = time::Instant::now() - time::Duration::from_secs(2);
+      log::info!("reading from serial port {}", serial_port);
+      let mut buf = vec![0u8; 2usize.pow(16)];
+      let mut read_0_bytes_counter = 0;
       loop {
-        if data_link.lock().await.is_some() {
-          log::info!("reading from serial port {}", serial_port);
-          let mut buf = vec![0u8; 2usize.pow(16)];
-          'read_loop: loop {
-            match port_reader.read(&mut buf).await {
-              Ok(n) => {
-                log::trace!("read {n} bytes");
-                for data in buf[..n].chunks(reticulum::packet::PACKET_MDU / 2) {
-                  let mut lock = data_link.lock().await;
-                  if let Some(link_mutex) = lock.take() {
-                    let link = link_mutex.lock().await;
-                    let status = link.status();
-                    if status == LinkStatus::Closed {
-                      log::info!("read port loop: data link is closed");
-                      break 'read_loop
-                    } else if status != LinkStatus::Active {
-                      drop(link);
-                      *lock = Some(link_mutex);
-                      log::info!("read port loop: data link is not yet active ({status:?})");
-                    } else {
-                      log::trace!("sending on link ({})", link.id());
-                      match link.data_packet(data) {
-                        Ok(packet) => {
-                          drop(link); // drop before sending to prevent deadlock
-                          transport.send_packet(packet).await;
-                          *lock = Some(link_mutex);
-                        }
-                        Err(err) => {
-                          log::error!("error creating data packet: {err:?}");
-                          let _ = transport.link_close(*link.id()).await.map_err(|err|
-                            log::warn!("error closing data link: {err:?}"));
-                          break 'read_loop
-                        }
-                      }
-                    }
-                  } else {
-                    log::info!("data link lost, waiting for link to be re-established");
-                    break 'read_loop
+        match port_reader.read(&mut buf).await {
+          Ok(n) => {
+            log::trace!("read {n} bytes");
+            if n > 0 {
+              read_0_bytes_counter = 0;
+            } else {
+              read_0_bytes_counter += 1;
+              if read_0_bytes_counter == SERIAL_PORT_READ_0_BYTES_LIMIT {
+                log::error!("serial port read 0 bytes limit reached \
+                  ({SERIAL_PORT_READ_0_BYTES_LIMIT}), shutting down");
+                return
+              }
+            }
+            if let Some(link_mutex) = data_link.lock().await.as_ref() {
+              for data in buf[..n].chunks(reticulum::packet::PACKET_MDU / 2) {
+                let link = link_mutex.lock().await;
+                match link.status() {
+                  LinkStatus::Closed => log::warn!("link closed, not sending"),
+                  LinkStatus::Pending | LinkStatus::Handshake =>
+                    log::debug!("link pending, not sending"),
+                  LinkStatus::Active | LinkStatus::Stale => {}
+                }
+                log::trace!("sending on link ({})", link.id());
+                match link.data_packet(data) {
+                  Ok(packet) => {
+                    drop(link); // drop before sending to prevent deadlock
+                    transport.send_packet(packet).await;
                   }
+                  Err(err) => log::warn!("error creating data packet: {err:?}")
                 }
               }
-              Err(e) => log::error!("error reading serial port: {}", e)
             }
           }
+          Err(e) => log::error!("error reading serial port: {}", e)
         }
-        let now = time::Instant::now();
-        if now - debug_ts >= time::Duration::from_secs(2) {
-          log::debug!("read port loop: waiting for data link");
-          debug_ts = now;
-        }
-        time::sleep(time::Duration::from_millis(200)).await;
       }
     };
     // handle link events
@@ -177,6 +203,8 @@ impl Fc {
                 LinkEvent::Activated => {
                   log::info!("data link activated {}", link_event.id);
                   debug_assert!(data_link.lock().await.is_some());
+                  debug_assert!(data_link_request_ts.lock().await.is_some());
+                  *data_link_request_ts.lock().await = None;
                 }
                 LinkEvent::Closed => {
                   log::warn!("data link closed {}", link_event.id);

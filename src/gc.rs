@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use tokio::time;
 
 use reticulum::destination::SingleInputDestination;
-use reticulum::destination::link::{LinkEvent, LinkId};
+use reticulum::destination::link::{LinkEvent, LinkId, LinkStatus};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
@@ -20,7 +20,7 @@ pub struct Gc {
   radio_client: Option<SharedRadioClient>
 }
 
-const fn default_announce_interval_seconds() -> u64 { 2 }
+const fn default_announce_interval_seconds() -> u64 { 5 }
 
 #[derive(Deserialize)]
 pub struct Config {
@@ -71,16 +71,25 @@ impl Gc {
       }
     };
     // send announces
+    let data_link_id: Arc<Mutex<Option<LinkId>>> = Arc::new(Mutex::new(None));
     let announce_loop = async || loop {
       log::debug!("sending announce");
       transport.send_announce(&data_destination, None).await;
       time::sleep(time::Duration::from_secs(self.config.announce_interval_seconds))
         .await;
+      if let Some(link_id) = data_link_id.lock().await.as_ref() {
+        if let Some(link) = transport.find_in_link(link_id).await {
+          if link.lock().await.status() == LinkStatus::Closed {
+            log::warn!("data link is closed, discarding link");
+            *data_link_id.lock().await = None;
+          }
+        } else {
+          log::error!("could not find link {link_id}");
+        }
+      }
     };
-    // link variables
-    let data_link_id: Arc<Mutex<Option<LinkId>>> = Arc::new(Mutex::new(None));
-    let ground_station_address = Arc::new(Mutex::new(None));
     // listen for packets from ground control station
+    let ground_station_address = Arc::new(Mutex::new(None));
     log::info!("creating ground control UDP reply socket for port {}",
       self.config.gc_reply_port);
     let socket = UdpSocket::bind(format!("0.0.0.0:{}", self.config.gc_reply_port)).await
@@ -131,12 +140,10 @@ impl Gc {
         }
         log::info!("listening for UDP packets on port {}",
           socket.local_addr().unwrap().port());
-        let mut buf = [0u8; 2usize.pow(16)];
+        let mut buf = vec![0u8; 2usize.pow(16)];
         loop {
           // read socket
-          match tokio::time::timeout(ground_station_timeout, socket.recv_from(&mut buf))
-            .await
-          {
+          match time::timeout(ground_station_timeout, socket.recv_from(&mut buf)).await {
             Ok(Ok((size, src))) => {
               if size == 0 {
                 log::warn!("zero size UDP packet data");
