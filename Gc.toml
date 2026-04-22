@@ -1,4 +1,5 @@
 log_level = "debug"
+log_throughput = true
 gc_udp_subnet = "192.168.1.0"
 gc_udp_port = 14550
 gc_reply_port = 9999

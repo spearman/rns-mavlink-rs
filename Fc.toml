@@ -1,4 +1,5 @@
 log_level = "debug"
+log_throughput = true
 serial_port = "/dev/ttyACM0"
 #serial_port = "/dev/ttySTM1"
 serial_baud = 57600

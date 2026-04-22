@@ -11,7 +11,7 @@ use reticulum::destination::link::{Link, LinkEvent, LinkStatus};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
-use crate::SharedRadioClient;
+use crate::{SharedRadioClient, Throughput, THROUGHPUT_LOG_FREQUENCY_SECONDS};
 
 pub const CONFIG_PATH: &str = "Fc.toml";
 /// When the fc is disconnected the port will read 0 bytes and reconnecting the
@@ -33,6 +33,8 @@ pub struct Fc {
 #[derive(Deserialize, Serialize)]
 pub struct Config {
   pub log_level: String,
+  #[serde(default)]
+  pub log_throughput: bool,
   pub serial_port: String,
   pub serial_baud: u32,
   // TODO: deserialize AddressHash
@@ -77,6 +79,7 @@ impl Fc {
       .open_native_async()
       .map_err(Error::SerialDeviceError)?;
     let (mut port_reader, mut port_writer) = tokio::io::split(port);
+    let throughput = Arc::new(Mutex::new(Throughput::new()));
     // ping radio client
     let ping_radio_client_loop = async || {
       loop {
@@ -176,6 +179,9 @@ impl Fc {
                   Ok(packet) => {
                     drop(link); // drop before sending to prevent deadlock
                     transport.send_packet(packet).await;
+                    if self.config.log_throughput {
+                      throughput.lock().await.send_bytes(data.len() as u32);
+                    }
                   }
                   Err(err) => log::warn!("error creating data packet: {err:?}")
                 }
@@ -206,6 +212,9 @@ impl Fc {
                       break
                     }
                   }
+                  if self.config.log_throughput {
+                    throughput.lock().await.recv_bytes(payload.len() as u32);
+                  }
                 }
                 LinkEvent::Activated => {
                   log::info!("data link activated {}", link_event.id);
@@ -231,8 +240,23 @@ impl Fc {
         }
       }
     };
+    // throughput log
+    let throughput_log_loop = async || {
+      if self.config.log_throughput {
+        loop {
+          time::sleep(time::Duration::from_secs(THROUGHPUT_LOG_FREQUENCY_SECONDS)).await;
+          throughput.lock().await.log();
+        }
+      } else {
+        /*FIXME:debug*/ log::warn!("======================= BANG1");
+        std::future::pending::<()>().await;
+        /*FIXME:debug*/ log::warn!("----------------------- BANG2");
+      }
+    };
     // run
     tokio::select!{
+      _ = throughput_log_loop() =>
+        log::info!("throughput log loop exited: shutting down"),
       _ = ping_radio_client_loop() =>
         log::info!("ping radio client loop exited: shutting down"),
       _ = read_port_loop() => log::info!("read port loop exited: shutting down"),

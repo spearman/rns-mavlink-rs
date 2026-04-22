@@ -14,7 +14,7 @@ use reticulum::destination::link::{LinkEvent, LinkId, LinkStatus};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
-use crate::SharedRadioClient;
+use crate::{SharedRadioClient, Throughput, THROUGHPUT_LOG_FREQUENCY_SECONDS};
 
 pub struct Gc {
   config: Config,
@@ -30,6 +30,8 @@ fn default_radio_modulation() -> Modulation {
 #[derive(Deserialize)]
 pub struct Config {
   pub log_level: String,
+  #[serde(default)]
+  pub log_throughput: bool,
   pub gc_udp_subnet: net::Ipv4Addr,
   pub gc_udp_port: u16,
   pub gc_reply_port: u16,
@@ -62,6 +64,7 @@ impl Gc {
   ) -> Result<(), Error> {
     log::info!("running gc");
     let data_destination_hash = data_destination.lock().await.desc.address_hash;
+    let throughput = Arc::new(Mutex::new(Throughput::new()));
     // ping radio client
     let ping_radio_client_loop = async || {
       loop {
@@ -177,6 +180,9 @@ impl Gc {
                     Ok(packet) => {
                       drop(link); // drop to prevent deadlock
                       transport.send_packet(packet).await;
+                      if self.config.log_throughput {
+                        throughput.lock().await.send_bytes(data.len() as u32);
+                      }
                     }
                     Err(err) => log::error!("error creating data packet: {err:?}")
                   }
@@ -226,6 +232,9 @@ impl Gc {
                         break
                       }
                     }
+                    if self.config.log_throughput {
+                      throughput.lock().await.recv_bytes(payload.len() as u32);
+                    }
                   } else {
                     log::trace!("dropping payload: no ground station address");
                   }
@@ -253,8 +262,23 @@ impl Gc {
         }
       }
     };
+    // throughput log
+    let throughput_log_loop = async || {
+      if self.config.log_throughput {
+        loop {
+          time::sleep(time::Duration::from_secs(THROUGHPUT_LOG_FREQUENCY_SECONDS)).await;
+          throughput.lock().await.log();
+        }
+      } else {
+        /*FIXME:debug*/ log::warn!("======================= BANG1");
+        std::future::pending::<()>().await;
+        /*FIXME:debug*/ log::warn!("----------------------- BANG2");
+      }
+    };
     // run
     tokio::select!{
+      _ = throughput_log_loop() =>
+        log::info!("throughput log loop exited: shutting down"),
       _ = ping_radio_client_loop() =>
         log::info!("ping radio client loop exited: shutting down"),
       _ = announce_loop() => log::info!("announce loop exited: shutting down"),
