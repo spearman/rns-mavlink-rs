@@ -107,7 +107,8 @@ impl Fc {
             log::warn!("data link is closed, discarding link");
             if let Some(link) = data_link.lock().await.take() {
               let link_id = link.lock().await.id().clone();
-              let _ = transport.link_close(link_id).await.map_err(|err|
+              log::info!("closing data link {link_id}");
+              let _ = transport.link_close(gc_data_destination).await.map_err(|err|
                 log::warn!("error closing data link {link_id}: {err:?}"));
             }
             *data_link_request_ts.lock().await = None;
@@ -121,7 +122,8 @@ impl Fc {
               {DATA_LINK_REQUEST_TIMEOUT_SECONDS} seconds, discarding link");
             if let Some(link) = data_link.lock().await.take() {
               let link_id = link.lock().await.id().clone();
-              let _ = transport.link_close(link_id).await.map_err(|err|
+              log::info!("closing data link {link_id}");
+              let _ = transport.link_close(gc_data_destination).await.map_err(|err|
                 log::warn!("error closing data link {link_id}: {err:?}"));
             }
             *data_link_request_ts.lock().await = None;
