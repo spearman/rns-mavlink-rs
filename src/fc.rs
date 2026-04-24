@@ -169,9 +169,14 @@ impl Fc {
               for data in buf[..n].chunks(reticulum::packet::PACKET_MDU / 2) {
                 let link = link_mutex.lock().await;
                 match link.status() {
-                  LinkStatus::Closed => log::warn!("link closed, not sending"),
-                  LinkStatus::Pending | LinkStatus::Handshake =>
-                    log::debug!("link pending, not sending"),
+                  LinkStatus::Closed => {
+                    log::warn!("link closed, not sending");
+                    break
+                  }
+                  LinkStatus::Pending | LinkStatus::Handshake => {
+                    log::debug!("link pending, not sending");
+                    break
+                  }
                   LinkStatus::Active | LinkStatus::Stale => {}
                 }
                 log::trace!("sending on link ({})", link.id());
