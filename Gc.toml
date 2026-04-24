@@ -1,4 +1,5 @@
 log_level = "debug"
+log_throughput = true
 gc_udp_subnet = "192.168.1.0"
 gc_udp_port = 14550
 gc_reply_port = 9999
@@ -12,3 +13,14 @@ freq = 869535000          # Hz
 channel_spacing = 200000  # Hz
 channel = 3
 bandwidth_filter = "Narrow"
+
+#[radio_modulation.Ofdm]
+#mcs = "QamC3_4"
+#opt = "Option1"
+#pdt = 3
+#tx_power = 10
+
+#[radio_modulation.Qpsk]
+#fchip = "Fchip100"
+#mode = "RateMode0"
+#tx_power = 10

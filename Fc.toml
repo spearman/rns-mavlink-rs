@@ -1,9 +1,9 @@
 log_level = "debug"
+log_throughput = true
 #serial_port = "/dev/ttyACM0"
 serial_port = "/dev/ttySTM1"
 serial_baud = 57600
 gc_data_destination = "32f0c4dc2a9f9bdee3897ccf82365bed"
-gc_radio_config_destination = "473762efed6c103c225aab977f25535b"
 
 radio_module = 0
 
@@ -12,3 +12,14 @@ freq = 869535000          # Hz
 channel_spacing = 200000  # Hz
 channel = 3
 bandwidth_filter = "Narrow"
+
+#[radio_modulation.Ofdm]
+#mcs = "QamC3_4"
+#opt = "Option1"
+#pdt = 3
+#tx_power = 10
+
+#[radio_modulation.Qpsk]
+#fchip = "Fchip100"
+#mode = "RateMode0"
+#tx_power = 10
