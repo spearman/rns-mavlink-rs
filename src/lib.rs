@@ -48,6 +48,10 @@ pub(crate) struct Throughput {
   link_recv_total_bytes: u64,
   /// Data link incoming bytes since last log
   link_recv_bytes: u32,
+  packets_in: u32,
+  packets_out: u32,
+  packets_in_total: u64,
+  packets_out_total: u64,
   last_ts: time::Instant
 }
 
@@ -58,27 +62,43 @@ impl Throughput {
       link_send_bytes: 0,
       link_recv_total_bytes: 0,
       link_recv_bytes: 0,
+      packets_in: 0,
+      packets_out: 0,
+      packets_in_total: 0,
+      packets_out_total: 0,
       last_ts: time::Instant::now()
     }
   }
 
-  pub fn recv_bytes(&mut self, n : u32) {
+  pub fn recv_packet(&mut self, n : u32) {
     self.link_recv_bytes += n;
     self.link_recv_total_bytes += n as u64;
+    self.packets_in += 1;
+    self.packets_in_total += 1;
   }
-  pub fn send_bytes(&mut self, n : u32) {
+  pub fn send_packet(&mut self, n : u32) {
     self.link_send_bytes += n;
     self.link_send_total_bytes += n as u64;
+    self.packets_out += 1;
+    self.packets_out_total += 1;
   }
   pub fn log(&mut self) {
     let now = time::Instant::now();
     let elapsed = now - self.last_ts;
     let in_bps = (self.link_recv_bytes as f32 / elapsed.as_secs_f32()) as u32;
     let out_bps = (self.link_send_bytes as f32 / elapsed.as_secs_f32()) as u32;
-    log::info!("link in B/s: {in_bps}, link out B/s: {out_bps}, total in bytes: {}, \
-      total out bytes: {}", self.link_recv_total_bytes, self.link_send_total_bytes);
+    let in_pps = (self.packets_in as f32 / elapsed.as_secs_f32()) as u32;
+    let out_pps = (self.packets_out as f32 / elapsed.as_secs_f32()) as u32;
+    log::info!("packets in / s: {in_pps}, packets out / s: {out_pps}, \
+      link in B/s: {in_bps}, link out B/s: {out_bps}, \
+      total packets in: {}, total packets out: {} \
+      total bytes in: {}, total bytes out: {}",
+      self.packets_in_total, self.packets_out_total, self.link_recv_total_bytes,
+      self.link_send_total_bytes);
     self.last_ts = now;
     self.link_recv_bytes = 0;
     self.link_send_bytes = 0;
+    self.packets_in = 0;
+    self.packets_out = 0;
   }
 }

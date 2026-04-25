@@ -181,7 +181,7 @@ impl Gc {
                       drop(link); // drop to prevent deadlock
                       transport.send_packet(packet).await;
                       if self.config.log_throughput {
-                        throughput.lock().await.send_bytes(data.len() as u32);
+                        throughput.lock().await.send_packet(data.len() as u32);
                       }
                     }
                     Err(err) => log::error!("error creating data packet: {err:?}")
@@ -233,7 +233,7 @@ impl Gc {
                       }
                     }
                     if self.config.log_throughput {
-                      throughput.lock().await.recv_bytes(payload.len() as u32);
+                      throughput.lock().await.recv_packet(payload.len() as u32);
                     }
                   } else {
                     log::trace!("dropping payload: no ground station address");
@@ -270,9 +270,7 @@ impl Gc {
           throughput.lock().await.log();
         }
       } else {
-        /*FIXME:debug*/ log::warn!("======================= BANG1");
         std::future::pending::<()>().await;
-        /*FIXME:debug*/ log::warn!("----------------------- BANG2");
       }
     };
     // run

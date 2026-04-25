@@ -195,7 +195,7 @@ impl Fc {
                     drop(link); // drop before sending to prevent deadlock
                     transport.send_packet(packet).await;
                     if self.config.log_throughput {
-                      throughput.lock().await.send_bytes(data.len() as u32);
+                      throughput.lock().await.send_packet(data.len() as u32);
                     }
                   }
                   Err(err) => log::warn!("error creating data packet: {err:?}")
@@ -228,7 +228,7 @@ impl Fc {
                     }
                   }
                   if self.config.log_throughput {
-                    throughput.lock().await.recv_bytes(payload.len() as u32);
+                    throughput.lock().await.recv_packet(payload.len() as u32);
                   }
                 }
                 LinkEvent::Activated => {
@@ -263,9 +263,7 @@ impl Fc {
           throughput.lock().await.log();
         }
       } else {
-        /*FIXME:debug*/ log::warn!("======================= BANG1");
         std::future::pending::<()>().await;
-        /*FIXME:debug*/ log::warn!("----------------------- BANG2");
       }
     };
     // run
