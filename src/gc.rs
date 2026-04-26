@@ -32,6 +32,8 @@ pub struct Config {
   pub log_level: String,
   #[serde(default)]
   pub log_throughput: bool,
+  #[serde(default)]
+  pub gc_udp_address: Option<net::Ipv4Addr>,
   pub gc_udp_subnet: net::Ipv4Addr,
   pub gc_udp_port: u16,
   pub gc_reply_port: u16,
@@ -64,7 +66,7 @@ impl Gc {
   ) -> Result<(), Error> {
     log::info!("running gc");
     let data_destination_hash = data_destination.lock().await.desc.address_hash;
-    let throughput = Arc::new(Mutex::new(Throughput::new()));
+    let throughput = Arc::new(Mutex::new(Throughput::new_gc()));
     // ping radio client
     let ping_radio_client_loop = async || {
       loop {
@@ -113,7 +115,24 @@ impl Gc {
     let socket_loop = async || {
       let ground_station_timeout = time::Duration::from_secs(10);
       loop {
-        {
+        // use configured ground station address if present
+        if let Some(addr) = self.config.gc_udp_address.as_ref() {
+          let socket_addr = net::SocketAddrV4::new(*addr, self.config.gc_udp_port).into();
+          log::info!("using configured ground station address: {socket_addr}");
+          match socket.send_to(b"", socket_addr).await {
+            Ok(_) => {}
+            Err(err) => if err.kind() == std::io::ErrorKind::NetworkUnreachable {
+              // network may not yet be reachable
+              log::warn!("network unreachable");
+              time::sleep(time::Duration::from_secs(4)).await;
+              continue
+            } else {
+              log::error!("error sending message to ground station: {err}");
+              return
+            }
+          }
+          *ground_station_address.lock().await = Some(socket_addr);
+        } else {
           // search for ground station on network at gc_udp_port
           // TODO: would be nice to use mdns here but mdns crate didn't seem to work
           let mut n = 2;  // iterate over addresses
@@ -165,6 +184,7 @@ impl Gc {
                 log::warn!("zero size UDP packet data");
                 continue
               }
+              throughput.lock().await.ground_station_bytes(size as u64);
               let data = &buf[..size];
               match str::from_utf8(data) {
                 Ok(text) => log::trace!("received from {}: {}", src, text),
@@ -181,7 +201,7 @@ impl Gc {
                       drop(link); // drop to prevent deadlock
                       transport.send_packet(packet).await;
                       if self.config.log_throughput {
-                        throughput.lock().await.send_bytes(data.len() as u32);
+                        throughput.lock().await.send_packet(data.len() as u32);
                       }
                     }
                     Err(err) => log::error!("error creating data packet: {err:?}")
@@ -233,7 +253,7 @@ impl Gc {
                       }
                     }
                     if self.config.log_throughput {
-                      throughput.lock().await.recv_bytes(payload.len() as u32);
+                      throughput.lock().await.recv_packet(payload.len() as u32);
                     }
                   } else {
                     log::trace!("dropping payload: no ground station address");
@@ -270,9 +290,7 @@ impl Gc {
           throughput.lock().await.log();
         }
       } else {
-        /*FIXME:debug*/ log::warn!("======================= BANG1");
         std::future::pending::<()>().await;
-        /*FIXME:debug*/ log::warn!("----------------------- BANG2");
       }
     };
     // run

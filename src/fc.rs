@@ -79,7 +79,7 @@ impl Fc {
       .open_native_async()
       .map_err(Error::SerialDeviceError)?;
     let (mut port_reader, mut port_writer) = tokio::io::split(port);
-    let throughput = Arc::new(Mutex::new(Throughput::new()));
+    let throughput = Arc::new(Mutex::new(Throughput::new_fc()));
     // ping radio client
     let ping_radio_client_loop = async || {
       loop {
@@ -165,6 +165,7 @@ impl Fc {
         match port_reader.read(&mut buf).await {
           Ok(n) => {
             log::trace!("read {n} bytes");
+            throughput.lock().await.serial_port_bytes(n as u64);
             if n > 0 {
               read_0_bytes_counter = 0;
             } else {
@@ -195,7 +196,7 @@ impl Fc {
                     drop(link); // drop before sending to prevent deadlock
                     transport.send_packet(packet).await;
                     if self.config.log_throughput {
-                      throughput.lock().await.send_bytes(data.len() as u32);
+                      throughput.lock().await.send_packet(data.len() as u32);
                     }
                   }
                   Err(err) => log::warn!("error creating data packet: {err:?}")
@@ -228,7 +229,7 @@ impl Fc {
                     }
                   }
                   if self.config.log_throughput {
-                    throughput.lock().await.recv_bytes(payload.len() as u32);
+                    throughput.lock().await.recv_packet(payload.len() as u32);
                   }
                 }
                 LinkEvent::Activated => {
@@ -263,9 +264,7 @@ impl Fc {
           throughput.lock().await.log();
         }
       } else {
-        /*FIXME:debug*/ log::warn!("======================= BANG1");
         std::future::pending::<()>().await;
-        /*FIXME:debug*/ log::warn!("----------------------- BANG2");
       }
     };
     // run
