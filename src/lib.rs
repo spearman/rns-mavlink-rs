@@ -40,6 +40,8 @@ pub async fn init_kaonic_radio_client(
 }
 
 pub(crate) struct Throughput {
+  is_gc: bool,
+  is_fc: bool,
   /// Total data link outgoing bytes since startup
   link_send_total_bytes: u64,
   /// Data link outgoing bytes since last log
@@ -52,12 +54,16 @@ pub(crate) struct Throughput {
   packets_out: u32,
   packets_in_total: u64,
   packets_out_total: u64,
+  total_ground_station_bytes: u64,
+  total_serial_port_bytes: u64,
   last_ts: time::Instant
 }
 
 impl Throughput {
-  pub fn new() -> Self {
+  pub fn new_gc() -> Self {
     Throughput {
+      is_gc: true,
+      is_fc: false,
       link_send_total_bytes: 0,
       link_send_bytes: 0,
       link_recv_total_bytes: 0,
@@ -66,6 +72,26 @@ impl Throughput {
       packets_out: 0,
       packets_in_total: 0,
       packets_out_total: 0,
+      total_ground_station_bytes: 0,
+      total_serial_port_bytes: 0,
+      last_ts: time::Instant::now()
+    }
+  }
+
+  pub fn new_fc() -> Self {
+    Throughput {
+      is_gc: false,
+      is_fc: true,
+      link_send_total_bytes: 0,
+      link_send_bytes: 0,
+      link_recv_total_bytes: 0,
+      link_recv_bytes: 0,
+      packets_in: 0,
+      packets_out: 0,
+      packets_in_total: 0,
+      packets_out_total: 0,
+      total_ground_station_bytes: 0,
+      total_serial_port_bytes: 0,
       last_ts: time::Instant::now()
     }
   }
@@ -82,6 +108,12 @@ impl Throughput {
     self.packets_out += 1;
     self.packets_out_total += 1;
   }
+  pub fn ground_station_bytes(&mut self, n : u64) {
+    self.total_ground_station_bytes += n;
+  }
+  pub fn serial_port_bytes(&mut self, n : u64) {
+    self.total_serial_port_bytes += n;
+  }
   pub fn log(&mut self) {
     let now = time::Instant::now();
     let elapsed = now - self.last_ts;
@@ -89,10 +121,18 @@ impl Throughput {
     let out_bps = (self.link_send_bytes as f32 / elapsed.as_secs_f32()) as u32;
     let in_pps = (self.packets_in as f32 / elapsed.as_secs_f32()) as u32;
     let out_pps = (self.packets_out as f32 / elapsed.as_secs_f32()) as u32;
+    let extra_string = if self.is_gc {
+      format!(", total ground station bytes: {}", self.total_ground_station_bytes)
+    } else if self.is_fc {
+      format!(", total serial port bytes: {}", self.total_serial_port_bytes)
+    } else {
+      "".to_string()
+    };
     log::info!("packets in / s: {in_pps}, packets out / s: {out_pps}, \
       link in B/s: {in_bps}, link out B/s: {out_bps}, \
       total packets in: {}, total packets out: {} \
-      total bytes in: {}, total bytes out: {}",
+      total bytes in: {}, total bytes out: {}\
+      {extra_string}",
       self.packets_in_total, self.packets_out_total, self.link_recv_total_bytes,
       self.link_send_total_bytes);
     self.last_ts = now;

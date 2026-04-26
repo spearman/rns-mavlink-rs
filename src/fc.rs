@@ -79,7 +79,7 @@ impl Fc {
       .open_native_async()
       .map_err(Error::SerialDeviceError)?;
     let (mut port_reader, mut port_writer) = tokio::io::split(port);
-    let throughput = Arc::new(Mutex::new(Throughput::new()));
+    let throughput = Arc::new(Mutex::new(Throughput::new_fc()));
     // ping radio client
     let ping_radio_client_loop = async || {
       loop {
@@ -165,6 +165,7 @@ impl Fc {
         match port_reader.read(&mut buf).await {
           Ok(n) => {
             log::trace!("read {n} bytes");
+            throughput.lock().await.serial_port_bytes(n as u64);
             if n > 0 {
               read_0_bytes_counter = 0;
             } else {
