@@ -3,7 +3,6 @@ Description=Reticulum Mavlink Flight Controller Daemon
 After=network.target
 
 [Service]
-ExecStartPre=/usr/bin/stty -F /dev/ttySTM1 57600
 ExecStart=/usr/bin/rns-mavlink-fc -l 192.168.10.1:12001 -a 192.168.10.1:9090
 WorkingDirectory=/home/root/rns-mavlink
 User=root
