@@ -8,5 +8,6 @@ rustup target add armv7-unknown-linux-gnueabihf
 cargo build --release
 cargo build --release --bin fc
 cargo build --release --bin gc
+./create-ota.sh
 
 exit 0
