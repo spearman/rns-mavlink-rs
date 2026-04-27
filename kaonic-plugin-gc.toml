@@ -1,5 +1,5 @@
 [kaonic-plugin]
-name = "Reticulum Mavlink Ground Control Daemon"
+name = "Reticulum Mavlink Ground Control Bridge"
 description = "A Reticulum bridge for drone ground station software such as MissionPlanner"
 version = "0.1.0"
 service = "rns-mavlink-gc.service"

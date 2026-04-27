@@ -1,5 +1,5 @@
 [kaonic-plugin]
-name = "Reticulum Mavlink Flight Controller Daemon"
+name = "Reticulum Mavlink Flight Controller Bridge"
 description = "A Reticulum bridge for flight controller devices connected via serial port"
 version = "0.1.0"
 service = "rns-mavlink-fc.service"
