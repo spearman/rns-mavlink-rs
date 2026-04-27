@@ -1,0 +1,9 @@
+[kaonic-plugin]
+name = "Reticulum Mavlink Ground Control Daemon"
+description = "A Reticulum bridge for drone ground station software such as MissionPlanner"
+version = "0.1.0"
+service = "rns-mavlink-gc.service"
+developer = "Beechat Network Systems Ltd"
+github_url = "https://github.com/BeechatNetworkSystemsLtd/rns-mavlink-rs"
+symlink = "/usr/bin/rns-mavlink-gc"
+channel = "dev"

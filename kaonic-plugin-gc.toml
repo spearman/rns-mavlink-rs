@@ -1,0 +1,9 @@
+[kaonic-plugin]
+name = "Reticulum Mavlink Flight Controller Daemon"
+description = "A Reticulum bridge for flight controller devices connected via serial port"
+version = "0.1.0"
+service = "rns-mavlink-fc.service"
+developer = "Beechat Network Systems Ltd"
+github_url = "https://github.com/BeechatNetworkSystemsLtd/rns-mavlink-rs"
+symlink = "/usr/bin/rns-mavlink-fc"
+channel = "dev"
