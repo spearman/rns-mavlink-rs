@@ -78,6 +78,8 @@ fc_binary_path="${build_dir}/fc"
 gc_binary_path="${build_dir}/gc"
 fc_service_path="${BASE_DIR}/rns-mavlink-fc.service"
 gc_service_path="${BASE_DIR}/rns-mavlink-gc.service"
+fc_config_path="${BASE_DIR}/Fc.toml"
+gc_config_path="${BASE_DIR}/Gc.toml"
 fc_plugin_toml_path="${BASE_DIR}/kaonic-plugin-fc.toml"
 gc_plugin_toml_path="${BASE_DIR}/kaonic-plugin-gc.toml"
 release_name="rns-mavlink"
@@ -101,6 +103,15 @@ if [[ ! -f "$fc_service_path" ]]; then
 fi
 if [[ ! -f "$gc_service_path" ]]; then
     echo "Gc Service file not found: $gc_service_path" >&2
+    exit 1
+fi
+
+if [[ ! -f "$fc_config_path" ]]; then
+    echo "Fc Config file not found: $fc_config_path" >&2
+    exit 1
+fi
+if [[ ! -f "$gc_config_path" ]]; then
+    echo "Gc Config file not found: $gc_config_path" >&2
     exit 1
 fi
 
@@ -140,14 +151,16 @@ rm -rf "$fc_release_path"
 rm -rf "$gc_release_path"
 
 echo "> Make directories"
-mkdir -p "$fc_release_path"
-mkdir -p "$gc_release_path"
+mkdir -p "$fc_release_path/files"
+mkdir -p "$gc_release_path/files"
 
 echo "> Copy files"
 cp "$fc_binary_path" "$fc_release_path/rns-mavlink-fc"
 cp "$gc_binary_path" "$gc_release_path/rns-mavlink-gc"
 cp "$fc_service_path" "$fc_release_path/rns-mavlink-fc.service"
 cp "$gc_service_path" "$gc_release_path/rns-mavlink-gc.service"
+cp "$fc_config_path" "$fc_release_path/files/Fc.toml"
+cp "$gc_config_path" "$gc_release_path/files/Gc.toml"
 cp "$fc_plugin_toml_path" "$fc_release_path/kaonic-plugin.toml"
 cp "$gc_plugin_toml_path" "$gc_release_path/kaonic-plugin.toml"
 printf '%s' "$version" > "$fc_release_path/rns-mavlink-fc.version"
