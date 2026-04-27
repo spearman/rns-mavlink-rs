@@ -5,7 +5,6 @@ gc_udp_subnet = "192.168.1.0"
 gc_udp_port = 14550
 gc_reply_port = 9999
 fc_destination = "db332f13541eb2e4b47d02923fbbcb9a"
-radio_config_link = false
 
 radio_module = 0
 

@@ -1,4 +1,6 @@
+use std::future;
 use std::sync::Arc;
+use std::process;
 
 use radio_common::{Modulation, RadioConfig};
 use radio_common::modulation::OfdmModulation;
@@ -48,6 +50,8 @@ pub struct Config {
 #[derive(Debug)]
 pub enum Error {
   SerialDeviceError(tokio_serial::Error),
+  IoError(std::io::Error),
+  CommandFailed(String, process::ExitStatus),
   RnsError(reticulum::error::RnsError)
 }
 
@@ -74,6 +78,21 @@ impl Fc {
       parse_destination_hash(&self.config.gc_data_destination, "data")?;
     log::debug!("gc data destination: {gc_data_destination}");
     let serial_port = self.config.serial_port.clone();
+    log::info!("setting serial port {serial_port} baud {}", self.config.serial_baud);
+    {
+      let mut cmd = process::Command::new("stty");
+      cmd.args(["-F", &serial_port, &self.config.serial_baud.to_string()]);
+      let cmd_string = format!("{:?}", cmd);
+      let output = cmd.output().map_err(|err|{
+        log::error!("error executing stty command: {err}");
+        Error::IoError(err)
+      })?;
+      if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::error!("stty command failed: {stderr}");
+        return Err(Error::CommandFailed(cmd_string, output.status))
+      }
+    }
     log::info!("opening serial port {serial_port}");
     let port = tokio_serial::new(&serial_port, self.config.serial_baud)
       .open_native_async()
@@ -264,7 +283,7 @@ impl Fc {
           throughput.lock().await.log();
         }
       } else {
-        std::future::pending::<()>().await;
+        future::pending::<()>().await;
       }
     };
     // run
