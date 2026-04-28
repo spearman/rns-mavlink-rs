@@ -128,8 +128,8 @@ impl Throughput {
     } else {
       "".to_string()
     };
-    log::info!("packets in / s: {in_pps}, packets out / s: {out_pps}, \
-      link in B/s: {in_bps}, link out B/s: {out_bps}, \
+    log::info!("link in B/s: {in_bps}, link out B/s: {out_bps}, \
+      packets in / s: {in_pps}, packets out / s: {out_pps}, \
       total packets in: {}, total packets out: {} \
       total bytes in: {}, total bytes out: {}\
       {extra_string}",
