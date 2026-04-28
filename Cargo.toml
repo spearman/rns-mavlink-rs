@@ -9,6 +9,7 @@ edition = "2024"
 clap = { version= "4.*", features= ["derive"] }
 env_logger = "0.11.*"
 log = "0.4.*"
+mavlink = { version = "0.17.*", features = ["std", "common"], default-features = false }
 serde = { version = "1.*", features = ["derive"] }
 serde_json = "1.*"
 tokio = { version = "1.*", features = ["full"] }

@@ -1,6 +1,7 @@
 use std::net;
 use std::sync::Arc;
 
+use mavlink;
 use radio_common::{Modulation, RadioConfig};
 use radio_common::modulation::OfdmModulation;
 use serde::Deserialize;
@@ -53,6 +54,43 @@ pub struct Config {
 #[derive(Debug)]
 pub enum Error {
   IoError(std::io::Error)
+}
+
+fn heartbeat() -> Result<Vec<u8>, mavlink::error::MessageWriteError>  {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    use mavlink::MavHeader;
+    use mavlink::common::{
+      HEARTBEAT_DATA,
+      MavAutopilot,
+      MavMessage,
+      MavType,
+      MavModeFlag,
+      MavState,
+    };
+    static SEQNUM: AtomicU8 = AtomicU8::new(0);
+    let sequence = SEQNUM.load(Ordering::SeqCst).wrapping_add(1);
+    SEQNUM.store(sequence, Ordering::SeqCst);
+    let header = MavHeader {
+        system_id: 1,     // your system ID (1 is typical for a vehicle)
+        component_id: 1,  // autopilot component
+        sequence
+    };
+
+    let heartbeat = MavMessage::HEARTBEAT(HEARTBEAT_DATA {
+        custom_mode: 0,
+        mavtype: MavType::MAV_TYPE_QUADROTOR, // or MAV_TYPE_GENERIC, etc.
+        autopilot: MavAutopilot::MAV_AUTOPILOT_ARDUPILOTMEGA,
+        base_mode: MavModeFlag::MAV_MODE_FLAG_MANUAL_INPUT_ENABLED |
+          MavModeFlag::MAV_MODE_FLAG_STABILIZE_ENABLED |
+          MavModeFlag::MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+        system_status: MavState::MAV_STATE_STANDBY,
+        mavlink_version: 3, // always 3 for MAVLink v2
+    });
+
+    let mut out = vec![];
+    let _ = mavlink::write_v1_msg::<mavlink::common::MavMessage, _>(
+      &mut out, header, &heartbeat)?;
+    Ok(out)
 }
 
 impl Gc {
@@ -119,7 +157,14 @@ impl Gc {
         if let Some(addr) = self.config.gc_udp_address.as_ref() {
           let socket_addr = net::SocketAddrV4::new(*addr, self.config.gc_udp_port).into();
           log::info!("using configured ground station address: {socket_addr}");
-          match socket.send_to(b"", socket_addr).await {
+          let bytes = match heartbeat() {
+            Ok(bytes) => bytes,
+            Err(err) => {
+              log::error!("error creating heartbeat packet: {err}");
+              return
+            }
+          };
+          match socket.send_to(&bytes, socket_addr).await {
             Ok(_) => {}
             Err(err) => if err.kind() == std::io::ErrorKind::NetworkUnreachable {
               // network may not yet be reachable
@@ -148,7 +193,14 @@ impl Gc {
             }
             let address = net::SocketAddrV4::new(
               net::Ipv4Addr::new(subnet[0], subnet[1], subnet[2], n), self.config.gc_udp_port);
-            match socket.send_to(b"", address).await {
+            let bytes = match heartbeat() {
+              Ok(bytes) => bytes,
+              Err(err) => {
+                log::error!("error creating heartbeat packet: {err}");
+                return
+              }
+            };
+            match socket.send_to(&bytes, address).await {
               Ok(_) => {}
               Err(err) => if err.kind() == std::io::ErrorKind::NetworkUnreachable {
                 // network may not yet be reachable
