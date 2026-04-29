@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
+use chrono;
 use kaonic_ctrl::error::ControllerError;
 use kaonic_reticulum::KaonicCtrlInterface;
 use kaonic_reticulum::RadioClient;
 use radio_common::{RadioConfig, Modulation};
+use rolling_file::BasicRollingFileAppender;
+use serde_json;
 use tokio::sync::Mutex;
 use tokio::time;
 use tokio_util::sync::CancellationToken;
@@ -36,6 +39,54 @@ pub async fn init_kaonic_radio_client(
       Ok(radio_client)
     }
     Err(err) => Err(err)
+  }
+}
+
+pub async fn log_mavlink(
+  mavlink_log: Arc<Mutex<BasicRollingFileAppender>>,
+  message: &[u8],
+  source: &str
+) {
+  use std::io::Write;
+  use mavlink::Message;
+  let mut reader = mavlink::peek_reader::PeekReader::new(message);
+  match mavlink::read_any_raw_message::<mavlink::common::MavMessage, _>(&mut reader) {
+    Ok(raw) => {
+      let protocol_version = raw.version();
+      let header = mavlink::MavHeader {
+        system_id: raw.system_id(),
+        component_id: raw.component_id(),
+        sequence: raw.sequence()
+      };
+      let msg = match mavlink::common::MavMessage::parse(
+        protocol_version, raw.message_id(), raw.payload()
+      ) {
+        Ok(msg) => msg,
+        Err(err) => {
+          log::warn!("error parsing mavlink message: {err}");
+          return
+        }
+      };
+      let frame = mavlink::MavFrame { protocol_version, header, msg };
+      let mut log = mavlink_log.lock().await;
+      let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+      match serde_json::to_string(&frame)
+        .map_err(|err| err.to_string())
+        .and_then(|frame|
+          log.write_fmt(format_args!(
+            "{{\"ts\":{ts:?},\"source\":{source:?},\"frame\":{frame}}}\n"))
+            .map_err(|err| err.to_string()))
+      {
+        Ok(_) => {}
+        Err(err) => {
+          log::error!("error writing to mavlink log: {err}");
+          return
+        }
+      }
+    }
+    Err(err) => {
+      log::warn!("error reading raw mavlink: {err}");
+    }
   }
 }
 

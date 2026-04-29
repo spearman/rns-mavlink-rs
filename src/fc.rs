@@ -4,6 +4,7 @@ use std::process;
 
 use radio_common::{Modulation, RadioConfig};
 use radio_common::modulation::OfdmModulation;
+use rolling_file::{BasicRollingFileAppender, RollingConditionBasic};
 use serde::{Deserialize, Serialize};
 use tokio;
 use tokio::time;
@@ -13,7 +14,9 @@ use reticulum::destination::link::{Link, LinkEvent, LinkStatus};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
-use crate::{SharedRadioClient, Throughput, THROUGHPUT_LOG_FREQUENCY_SECONDS};
+use crate::{
+  log_mavlink, SharedRadioClient, Throughput, THROUGHPUT_LOG_FREQUENCY_SECONDS
+};
 
 pub const CONFIG_PATH: &str = "Fc.toml";
 /// When the fc is disconnected the port will read 0 bytes and reconnecting the
@@ -37,6 +40,8 @@ pub struct Config {
   pub log_level: String,
   #[serde(default)]
   pub log_throughput: bool,
+  #[serde(default)]
+  pub log_mavlink: Option<u64>,
   pub serial_port: String,
   pub serial_baud: u32,
   // TODO: deserialize AddressHash
@@ -99,6 +104,17 @@ impl Fc {
       .map_err(Error::SerialDeviceError)?;
     let (mut port_reader, mut port_writer) = tokio::io::split(port);
     let throughput = Arc::new(Mutex::new(Throughput::new_fc()));
+    let mavlink_log = if let Some(max_size) = self.config.log_mavlink {
+      let f = BasicRollingFileAppender::new("fc-mavlink.log",
+        RollingConditionBasic::new().max_size(max_size), 1
+      ).map_err(|err|{
+        log::error!("error creating mavlink log: {err}");
+        Error::IoError(err)
+      })?;
+      Some(Arc::new(Mutex::new(f)))
+    } else {
+      None
+    };
     // ping radio client
     let ping_radio_client_loop = async || {
       loop {
@@ -222,6 +238,9 @@ impl Fc {
                 }
               }
             }
+            if let Some(mavlink_log) = mavlink_log.clone() {
+              log_mavlink(mavlink_log, &buf[..n], "serial port").await;
+            }
           }
           Err(e) => log::error!("error reading serial port: {}", e)
         }
@@ -249,6 +268,10 @@ impl Fc {
                   }
                   if self.config.log_throughput {
                     throughput.lock().await.recv_packet(payload.len() as u32);
+                  }
+                  if let Some(mavlink_log) = mavlink_log.clone() {
+                    log_mavlink(mavlink_log, payload.as_slice(), "ground station link")
+                      .await;
                   }
                 }
                 LinkEvent::Activated => {

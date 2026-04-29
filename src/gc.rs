@@ -1,9 +1,9 @@
 use std::net;
 use std::sync::Arc;
 
-use mavlink;
 use radio_common::{Modulation, RadioConfig};
 use radio_common::modulation::OfdmModulation;
+use rolling_file::{BasicRollingFileAppender, RollingConditionBasic};
 use serde::Deserialize;
 use tokio;
 use tokio::net::UdpSocket;
@@ -15,7 +15,9 @@ use reticulum::destination::link::{LinkEvent, LinkId, LinkStatus};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
-use crate::{SharedRadioClient, Throughput, THROUGHPUT_LOG_FREQUENCY_SECONDS};
+use crate::{
+  log_mavlink, SharedRadioClient, Throughput, THROUGHPUT_LOG_FREQUENCY_SECONDS
+};
 
 pub struct Gc {
   config: Config,
@@ -33,6 +35,8 @@ pub struct Config {
   pub log_level: String,
   #[serde(default)]
   pub log_throughput: bool,
+  #[serde(default)]
+  pub log_mavlink: Option<u64>,
   #[serde(default)]
   pub gc_udp_address: Option<net::Ipv4Addr>,
   pub gc_udp_subnet: net::Ipv4Addr,
@@ -75,7 +79,6 @@ fn heartbeat() -> Result<Vec<u8>, mavlink::error::MessageWriteError>  {
         component_id: 1,  // autopilot component
         sequence
     };
-
     let heartbeat = MavMessage::HEARTBEAT(HEARTBEAT_DATA {
         custom_mode: 0,
         mavtype: MavType::MAV_TYPE_QUADROTOR, // or MAV_TYPE_GENERIC, etc.
@@ -86,7 +89,6 @@ fn heartbeat() -> Result<Vec<u8>, mavlink::error::MessageWriteError>  {
         system_status: MavState::MAV_STATE_STANDBY,
         mavlink_version: 3, // always 3 for MAVLink v2
     });
-
     let mut out = vec![];
     let _ = mavlink::write_v1_msg::<mavlink::common::MavMessage, _>(
       &mut out, header, &heartbeat)?;
@@ -105,6 +107,17 @@ impl Gc {
     log::info!("running gc");
     let data_destination_hash = data_destination.lock().await.desc.address_hash;
     let throughput = Arc::new(Mutex::new(Throughput::new_gc()));
+    let mavlink_log = if let Some(max_size) = self.config.log_mavlink {
+      let f = BasicRollingFileAppender::new("gc-mavlink.log",
+        RollingConditionBasic::new().max_size(max_size), 1
+      ).map_err(|err|{
+        log::error!("error creating mavlink log: {err}");
+        Error::IoError(err)
+      })?;
+      Some(Arc::new(Mutex::new(f)))
+    } else {
+      None
+    };
     // ping radio client
     let ping_radio_client_loop = async || {
       loop {
@@ -262,6 +275,9 @@ impl Gc {
                   log::error!("could not find data link ({link_id})")
                 }
               }
+              if let Some(mavlink_log) = mavlink_log.clone() {
+                log_mavlink(mavlink_log, data, "ground station udp").await;
+              }
             }
             Ok(Err(e)) => log::error!("error receiving packet: {e}"),
             Err(_) => {
@@ -307,6 +323,10 @@ impl Gc {
                     if self.config.log_throughput {
                       throughput.lock().await.recv_packet(payload.len() as u32);
                     }
+                    if let Some(mavlink_log) = mavlink_log.clone() {
+                      log_mavlink(mavlink_log, payload.as_slice(), "flight controller link")
+                        .await;
+                    }
                   } else {
                     log::trace!("dropping payload: no ground station address");
                   }
@@ -334,7 +354,6 @@ impl Gc {
         }
       }
     };
-    // throughput log
     let throughput_log_loop = async || {
       if self.config.log_throughput {
         loop {
