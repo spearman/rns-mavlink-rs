@@ -15,7 +15,8 @@ use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
 use crate::{
-  log_mavlink, SharedRadioClient, Throughput, THROUGHPUT_LOG_FREQUENCY_SECONDS
+  log_mavlink, MavlinkParser, SharedRadioClient, Throughput,
+  THROUGHPUT_LOG_FREQUENCY_SECONDS
 };
 
 pub const CONFIG_PATH: &str = "Fc.toml";
@@ -196,6 +197,7 @@ impl Fc {
       log::info!("reading from serial port {}", serial_port);
       let mut buf = vec![0u8; 2usize.pow(16)];
       let mut read_0_bytes_counter = 0;
+      let mut mavlink_parser = MavlinkParser::new();
       loop {
         match port_reader.read(&mut buf).await {
           Ok(n) => {
@@ -239,7 +241,8 @@ impl Fc {
               }
             }
             if let Some(mavlink_log) = mavlink_log.clone() {
-              log_mavlink(mavlink_log, &buf[..n], "serial port").await;
+              let frames = mavlink_parser.parse(&buf[..n]);
+              log_mavlink(mavlink_log, "serial port", frames).await;
             }
           }
           Err(e) => log::error!("error reading serial port: {}", e)
@@ -249,6 +252,7 @@ impl Fc {
     // handle link events
     let mut link_event_loop = async || {
       let mut out_link_events = transport.out_link_events();
+      let mut mavlink_parser = MavlinkParser::new();
       loop {
         match out_link_events.recv().await {
           Ok(link_event) => {
@@ -270,8 +274,8 @@ impl Fc {
                     throughput.lock().await.recv_packet(payload.len() as u32);
                   }
                   if let Some(mavlink_log) = mavlink_log.clone() {
-                    log_mavlink(mavlink_log, payload.as_slice(), "ground station link")
-                      .await;
+                    let frames = mavlink_parser.parse(payload.as_slice());
+                    log_mavlink(mavlink_log, "ground station link", frames).await;
                   }
                 }
                 LinkEvent::Activated => {
