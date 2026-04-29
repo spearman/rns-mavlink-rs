@@ -16,7 +16,8 @@ use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
 use crate::{
-  log_mavlink, SharedRadioClient, Throughput, THROUGHPUT_LOG_FREQUENCY_SECONDS
+  log_mavlink, MavlinkParser, SharedRadioClient, Throughput,
+  THROUGHPUT_LOG_FREQUENCY_SECONDS
 };
 
 pub struct Gc {
@@ -165,6 +166,7 @@ impl Gc {
       .map_err(Error::IoError)?;
     let socket_loop = async || {
       let ground_station_timeout = time::Duration::from_secs(10);
+      let mut mavlink_parser = MavlinkParser::new();
       loop {
         // use configured ground station address if present
         if let Some(addr) = self.config.gc_udp_address.as_ref() {
@@ -276,7 +278,8 @@ impl Gc {
                 }
               }
               if let Some(mavlink_log) = mavlink_log.clone() {
-                log_mavlink(mavlink_log, data, "ground station udp").await;
+                let frames = mavlink_parser.parse(data);
+                log_mavlink(mavlink_log, "ground station udp", frames).await;
               }
             }
             Ok(Err(e)) => log::error!("error receiving packet: {e}"),
@@ -301,6 +304,7 @@ impl Gc {
           }
         };
       let mut in_link_events = transport.in_link_events();
+      let mut mavlink_parser = MavlinkParser::new();
       loop {
         match in_link_events.recv().await {
           Ok(link_event) => {
@@ -324,8 +328,8 @@ impl Gc {
                       throughput.lock().await.recv_packet(payload.len() as u32);
                     }
                     if let Some(mavlink_log) = mavlink_log.clone() {
-                      log_mavlink(mavlink_log, payload.as_slice(), "flight controller link")
-                        .await;
+                      let frames = mavlink_parser.parse(payload.as_slice());
+                      log_mavlink(mavlink_log, "flight controller link", frames).await;
                     }
                   } else {
                     log::trace!("dropping payload: no ground station address");
