@@ -1,3 +1,5 @@
+use std::process;
+
 use clap::Parser;
 use log;
 use kaonic_reticulum::KaonicCtrlInterface;
@@ -27,11 +29,13 @@ pub struct Command {
   pub udp_listen_port: Option<u16>,
   #[clap(short = 'f', long, requires = "udp_listen_port",
     help = "Reticulum UDP forward address")]
-  pub udp_forward_address: Option<std::net::SocketAddr>
+  pub udp_forward_address: Option<std::net::SocketAddr>,
+  #[arg(short, long, help = "[Optional] Reticulum private ID from name string")]
+  pub id_string: Option<String>
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), process::ExitCode> {
   // parse command line args
   let cmd = Command::parse();
   // load config
@@ -47,9 +51,24 @@ async fn main() {
   env_logger::Builder::from_env(env_logger::Env::default()
     .default_filter_or(&config.log_level)).init();
   log::info!("fc start");
+  // load keys
+  let id = if let Some(name) = cmd.id_string {
+    log::info!("using identity string to create reticulum private identity: {name:?}");
+    PrivateIdentity::new_from_name(&name)
+  } else {
+    let privkey_path = std::env::var("RNS_MAVLINK_FC_PRIVKEY_PATH").map_err(|err|{
+      log::error!("env variable RNS_MAVLINK_FC_PRIVKEY_PATH not found: {err:?}");
+      process::ExitCode::FAILURE
+    })?;
+    let signkey_path = std::env::var("RNS_MAVLINK_FC_SIGNKEY_PATH").map_err(|err|{
+      log::error!("env variable RNS_MAVLINK_FC_SIGNKEY_PATH not found: {err:?}");
+      process::ExitCode::FAILURE
+    })?;
+    rns_mavlink::load_private_identity(&privkey_path, &signkey_path)
+      .map_err(|()| process::ExitCode::FAILURE)?
+  };
   // start reticulum
   log::info!("starting reticulum");
-  let id = PrivateIdentity::new_from_name("mavlink-rns-fc");
   let transport = Transport::new(TransportConfig::new("fc", &id, true));
   let destination = SingleInputDestination::new(id,
     DestinationName::new("rns_mavlink", "fc"));
@@ -67,7 +86,7 @@ async fn main() {
       Ok(radio_client) => radio_client,
       Err(err) => {
         log::error!("error creating kaonic-ctrl radio client: {err:?}");
-        std::process::exit(1)
+        return Err(process::ExitCode::FAILURE)
       }
     };
     let _ = transport.iface_manager().lock().await.spawn(
@@ -91,7 +110,7 @@ async fn main() {
     Ok(fc) => fc,
     Err(err) => {
       log::error!("error creating fc bridge: {:?}", err);
-      std::process::exit(1)
+      return Err(process::ExitCode::FAILURE)
     }
   };
   // run
@@ -100,4 +119,5 @@ async fn main() {
   } else {
     log::info!("fc exit");
   }
+  Ok(())
 }

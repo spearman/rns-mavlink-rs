@@ -9,9 +9,11 @@ edition = "2024"
 bytes = "1.*"
 chrono = "0.4.*"
 clap = { version= "4.*", features= ["derive"] }
+ed25519-dalek = { version = "2.*", features = ["pem", "pkcs8"] }
 env_logger = "0.11.*"
 log = "0.4.*"
 mavlink = { version = "0.17.*", features = ["std", "common", "serde"], default-features = false }
+pem = "3.*"
 rolling-file = "0.2.*"
 serde = { version = "1.*", features = ["derive"] }
 serde_json = "1.*"
@@ -19,6 +21,7 @@ tokio = { version = "1.*", features = ["full"] }
 tokio-serial = "5.*"
 tokio-util = "0.7.*"
 toml = "0.8.*"
+x25519-dalek = "2.*"
 
 [dependencies.kaonic-ctrl]
 git = "https://github.com/BeechatNetworkSystemsLtd/kaonic-radio"

@@ -1,3 +1,4 @@
+use std::fs;
 use std::sync::Arc;
 
 use chrono;
@@ -5,6 +6,7 @@ use kaonic_ctrl::error::ControllerError;
 use kaonic_reticulum::KaonicCtrlInterface;
 use kaonic_reticulum::RadioClient;
 use radio_common::{RadioConfig, Modulation};
+use reticulum::identity::PrivateIdentity;
 use rolling_file::BasicRollingFileAppender;
 use serde_json;
 use tokio::sync::Mutex;
@@ -40,6 +42,34 @@ pub async fn init_kaonic_radio_client(
     }
     Err(err) => Err(err)
   }
+}
+
+pub fn load_private_identity(privkey_path: &str, signkey_path: &str)
+  -> Result<PrivateIdentity, ()>
+{
+  log::info!("loading reticulum private identity parameters");
+  let private_key = {
+    log::info!("loading privkey: {privkey_path}");
+    let pem_data = fs::read(&privkey_path).map_err(|err|{
+      log::error!("failed to read privkey {privkey_path}: {err:?}");
+    })?;
+    let pem = pem::parse(pem_data).map_err(|err|{
+      log::error!("failed to parse privkey {privkey_path}: {err:?}");
+    })?;
+    let pem_bytes: [u8; 32] = pem.contents()[pem.contents().len()-32..].try_into()
+      .map_err(|err|{
+        log::error!("invalid privkey bytes: {err:?}");
+      })?;
+    x25519_dalek::StaticSecret::from(pem_bytes)
+  };
+  let sign_key = {
+    use ed25519_dalek::pkcs8::DecodePrivateKey;
+    log::info!("loading signkey: {signkey_path}");
+    ed25519_dalek::SigningKey::read_pkcs8_pem_file(&signkey_path).map_err(|err|{
+      log::error!("failed to parse signkey {signkey_path}: {err:?}");
+    })?
+  };
+  Ok(PrivateIdentity::new(private_key, sign_key))
 }
 
 pub struct MavlinkParser {
