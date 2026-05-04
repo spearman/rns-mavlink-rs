@@ -5,6 +5,7 @@ use kaonic_ctrl::error::ControllerError;
 use kaonic_reticulum::KaonicCtrlInterface;
 use kaonic_reticulum::RadioClient;
 use radio_common::{RadioConfig, Modulation};
+use rand;
 use rolling_file::BasicRollingFileAppender;
 use serde_json;
 use tokio::sync::Mutex;
@@ -40,6 +41,25 @@ pub async fn init_kaonic_radio_client(
     }
     Err(err) => Err(err)
   }
+}
+
+pub fn load_or_create_id_seed(path: &str) -> Result<String, std::io::Error> {
+  use rand::Rng;
+  std::fs::read_to_string(path).map(|s|{
+    log::debug!("loaded id seed from {path:?}");
+    s
+  }).or_else(|err|{
+    if err.kind() != std::io::ErrorKind::NotFound {
+      return Err(err)
+    }
+    let mut bytes = [0u8; 32];
+    let mut rng: rand::rngs::ChaCha12Rng = rand::make_rng();
+    rng.fill_bytes(&mut bytes);
+    let seed = bytes.iter().map (|b| format!("{b:02x}")).collect::<String>();
+    std::fs::write(path, &seed)?;
+    log::debug!("wrote id seed to {path:?}");
+    Ok(seed)
+  })
 }
 
 pub struct MavlinkParser {
