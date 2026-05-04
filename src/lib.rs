@@ -1,3 +1,4 @@
+use std::env;
 use std::sync::Arc;
 
 use chrono;
@@ -74,11 +75,19 @@ impl RadioConfig {
       (radio_config, self.radio_modulation)
     } else {
       let module = self.radio_module;
-      let path = std::env::var("RNS_MAVLINK_KAONIC_SETTINGS_DB_PATH").map_err(|_|{
-        log::error!("RNS_MAVLINK_KAONIC_SETTINGS_DB_PATH not set and no radio \
-          configuration provided");
-        InitRadioClientError::ConfigError
-      })?;
+      let path = env::var("RNS_MAVLINK_KAONIC_SETTINGS_DB_PATH")
+        .or_else(|err|{
+          match err {
+            env::VarError::NotUnicode(s) => {
+              log::error!("RNS_MAVLINK_KAONIC_SETTINGS_DB_PATH is not unicode: {s:?}");
+              return Err(InitRadioClientError::ConfigError)
+            }
+            env::VarError::NotPresent => {}
+          }
+          let path = "/kaonic-gateway.db".to_string();
+          log::info!("loading radio config from default settings db path: {path:?}");
+          Ok(path)
+        })?;
       let connection = rusqlite::Connection::open(path)
         .map_err(InitRadioClientError::SqliteError)?;
       let config = connection
