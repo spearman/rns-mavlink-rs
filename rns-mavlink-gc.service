@@ -4,6 +4,7 @@ After=network.target
 
 [Service]
 ExecStart=/usr/bin/rns-mavlink-gc -l 192.168.10.1:12002 -a 192.168.10.1:9090
+Environment="RNS_MAVLINK_KAONIC_SETTINGS_DB_PATH=/kaonic-gateway.db"
 WorkingDirectory=/home/root/rns-mavlink
 User=root
 Group=root

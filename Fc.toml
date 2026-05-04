@@ -8,11 +8,11 @@ gc_data_destination = "b2bc0b5cfca10ad38d7abb61606b55b8"
 
 radio_module = 0
 
-[radio_config]
-freq = 869535000          # Hz
-channel_spacing = 200000  # Hz
-channel = 3
-bandwidth_filter = "Narrow"
+#[radio_config]
+#freq = 869535000          # Hz
+#channel_spacing = 200000  # Hz
+#channel = 3
+#bandwidth_filter = "Narrow"
 
 #[radio_modulation.Ofdm]
 #mcs = "QamC3_4"

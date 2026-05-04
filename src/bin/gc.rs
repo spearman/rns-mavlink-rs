@@ -79,16 +79,12 @@ async fn main() -> Result<(), process::ExitCode> {
       .expect("required cmd parameter should be checked by parser");
     log::info!("creating RNS kaonic interface with kaonic-ctrl listen address \
       {listen_addr} and server address {server_addr}");
-    let radio_client = match rns_mavlink::init_kaonic_radio_client(
-      *listen_addr, *server_addr, config.radio_module, config.radio_config,
-      config.radio_modulation
-    ).await {
-      Ok(radio_client) => radio_client,
-      Err(err) => {
+    let radio_client = config.radio_config
+      .init_kaonic_radio_client(*listen_addr, *server_addr).await
+      .map_err(|err|{
         log::error!("error creating kaonic-ctrl radio client: {err:?}");
-        return Err(process::ExitCode::FAILURE)
-      }
-    };
+        process::ExitCode::FAILURE
+      })?;
     let _ = transport.iface_manager().lock().await.spawn(
       KaonicCtrlInterface::new(radio_client.clone(), 0, None),
       KaonicCtrlInterface::spawn);

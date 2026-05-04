@@ -11,6 +11,7 @@ mkShell {
     ]))
     rustup
     rust-analyzer
+    sqlite
     udev  # required for serialport crate
   ];
 }
