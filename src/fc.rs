@@ -1,11 +1,8 @@
-use std::future;
+use std::{future, process};
 use std::sync::Arc;
-use std::process;
 
-use radio_common::{Modulation, RadioConfig};
-use radio_common::modulation::OfdmModulation;
 use rolling_file::{BasicRollingFileAppender, RollingConditionBasic};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio;
 use tokio::time;
 use tokio::sync::Mutex;
@@ -15,7 +12,7 @@ use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
 use crate::{
-  log_mavlink, MavlinkParser, SharedRadioClient, Throughput,
+  log_mavlink, MavlinkParser, RadioConfig, SharedRadioClient, Throughput,
   THROUGHPUT_LOG_FREQUENCY_SECONDS
 };
 
@@ -27,16 +24,12 @@ pub const CONFIG_PATH: &str = "Fc.toml";
 const SERIAL_PORT_READ_0_BYTES_LIMIT: usize = 30;
 const DATA_LINK_REQUEST_TIMEOUT_SECONDS: u64 = 15;
 
-fn default_radio_modulation() -> Modulation {
-  Modulation::Ofdm(OfdmModulation::default())
-}
-
 pub struct Fc {
   config: Config,
   radio_client: Option<SharedRadioClient>
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 pub struct Config {
   pub log_level: String,
   #[serde(default)]
@@ -47,10 +40,8 @@ pub struct Config {
   pub serial_baud: u32,
   // TODO: deserialize AddressHash
   pub gc_data_destination: String,
-  pub radio_module: usize,
-  pub radio_config: RadioConfig,
-  #[serde(default="default_radio_modulation")]
-  pub radio_modulation: Modulation
+  #[serde(flatten)]
+  pub radio_config: RadioConfig
 }
 
 #[derive(Debug)]

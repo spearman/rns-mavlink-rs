@@ -9,11 +9,11 @@ fc_destination = "db332f13541eb2e4b47d02923fbbcb9a"
 
 radio_module = 0
 
-[radio_config]
-freq = 869535000          # Hz
-channel_spacing = 200000  # Hz
-channel = 3
-bandwidth_filter = "Narrow"
+#[radio_config]
+#freq = 869535000          # Hz
+#channel_spacing = 200000  # Hz
+#channel = 3
+#bandwidth_filter = "Narrow"
 
 #[radio_modulation.Ofdm]
 #mcs = "QamC3_4"

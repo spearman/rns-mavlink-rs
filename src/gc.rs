@@ -1,8 +1,6 @@
 use std::net;
 use std::sync::Arc;
 
-use radio_common::{Modulation, RadioConfig};
-use radio_common::modulation::OfdmModulation;
 use rolling_file::{BasicRollingFileAppender, RollingConditionBasic};
 use serde::Deserialize;
 use tokio;
@@ -16,7 +14,7 @@ use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
 use crate::{
-  log_mavlink, MavlinkParser, SharedRadioClient, Throughput,
+  log_mavlink, MavlinkParser, RadioConfig, SharedRadioClient, Throughput,
   THROUGHPUT_LOG_FREQUENCY_SECONDS
 };
 
@@ -26,10 +24,6 @@ pub struct Gc {
 }
 
 const fn default_announce_interval_seconds() -> u64 { 5 }
-
-fn default_radio_modulation() -> Modulation {
-  Modulation::Ofdm(OfdmModulation::default())
-}
 
 #[derive(Deserialize)]
 pub struct Config {
@@ -47,13 +41,8 @@ pub struct Config {
   pub announce_interval_seconds: u64,
   // TODO: deserialize AddressHash
   pub fc_destination: String,
-  pub radio_module: usize,
-  pub radio_config: RadioConfig,
-  #[serde(default="default_radio_modulation")]
-  pub radio_modulation: Modulation,
-  /// Whether to announce radio config link
-  #[serde(default)]
-  pub radio_config_link: bool
+  #[serde(flatten)]
+  pub radio_config: RadioConfig
 }
 
 #[derive(Debug)]

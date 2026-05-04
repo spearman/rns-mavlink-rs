@@ -4,9 +4,12 @@ use chrono;
 use kaonic_ctrl::error::ControllerError;
 use kaonic_reticulum::KaonicCtrlInterface;
 use kaonic_reticulum::RadioClient;
-use radio_common::{RadioConfig, Modulation};
+use radio_common::Modulation;
+use radio_common::modulation::OfdmModulation;
 use rand;
 use rolling_file::BasicRollingFileAppender;
+use rusqlite;
+use serde::Deserialize;
 use serde_json;
 use tokio::sync::Mutex;
 use tokio::time;
@@ -21,27 +24,6 @@ pub use gc::Gc;
 pub(crate) const THROUGHPUT_LOG_FREQUENCY_SECONDS: u64 = 2;
 
 type SharedRadioClient = Arc<Mutex<RadioClient>>;
-
-pub async fn init_kaonic_radio_client(
-  listen_addr: std::net::SocketAddr,
-  server_addr: std::net::SocketAddr,
-  radio_module: usize,
-  radio_config: RadioConfig,
-  radio_modulation: Modulation
-) -> Result<SharedRadioClient, ControllerError> {
-  match KaonicCtrlInterface::connect_client::<1400, 5>(
-    listen_addr, server_addr, CancellationToken::new()
-  ).await {
-    Ok(radio_client) => {
-      let mut client = radio_client.lock().await;
-      client.set_radio_config(radio_module, radio_config).await?;
-      client.set_modulation(radio_module, radio_modulation).await?;
-      drop(client);
-      Ok(radio_client)
-    }
-    Err(err) => Err(err)
-  }
-}
 
 pub fn load_or_create_id_seed(path: &str) -> Result<String, std::io::Error> {
   use rand::Rng;
@@ -60,6 +42,80 @@ pub fn load_or_create_id_seed(path: &str) -> Result<String, std::io::Error> {
     log::debug!("wrote id seed to {path:?}");
     Ok(seed)
   })
+}
+
+#[derive(Deserialize)]
+pub struct RadioConfig {
+  /// 0 or 1
+  #[serde(default)]
+  pub radio_module: usize,
+  /// If this `radio_config` is present, it will be used instead of reading from the
+  /// Kaonic settings database
+  #[serde(default)]
+  pub radio_config: Option<radio_common::RadioConfig>,
+  #[serde(default="default_radio_modulation")]
+  pub radio_modulation: Modulation
+}
+
+#[derive(Debug)]
+pub enum InitRadioClientError {
+  ConfigError,
+  ControllerError(ControllerError),
+  JsonParseError(serde_json::Error),
+  SqliteError(rusqlite::Error)
+}
+
+impl RadioConfig {
+  pub async fn init_kaonic_radio_client(&self,
+    listen_addr: std::net::SocketAddr,
+    server_addr: std::net::SocketAddr
+  ) -> Result<SharedRadioClient, InitRadioClientError> {
+    let (config, modulation) = if let Some(radio_config) = self.radio_config {
+      (radio_config, self.radio_modulation)
+    } else {
+      let module = self.radio_module;
+      let path = std::env::var("RNS_MAVLINK_KAONIC_SETTINGS_DB_PATH").map_err(|_|{
+        log::error!("RNS_MAVLINK_KAONIC_SETTINGS_DB_PATH not set and no radio \
+          configuration provided");
+        InitRadioClientError::ConfigError
+      })?;
+      let connection = rusqlite::Connection::open(path)
+        .map_err(InitRadioClientError::SqliteError)?;
+      let config = connection
+        .query_one("SELECT * FROM settings WHERE key = ?1",
+          [format!("kaonic_ctrl_radio_config_{module}")], |row| row.get(1))
+        .map_err(InitRadioClientError::SqliteError)
+        .and_then(|s: String|
+          serde_json::from_str(&s).map_err(InitRadioClientError::JsonParseError)
+        )?;
+      let modulation = connection
+        .query_one("SELECT * FROM settings WHERE key = ?1",
+          [format!("kaonic_ctrl_modulation_{module}")], |row| row.get(1))
+        .map_err(InitRadioClientError::SqliteError)
+        .and_then(|s: String|
+          serde_json::from_str(&s).map_err(InitRadioClientError::JsonParseError)
+        )?;
+      (config, modulation)
+    };
+    match KaonicCtrlInterface::connect_client::<1400, 5>(
+      listen_addr, server_addr, CancellationToken::new()
+    ).await {
+      Ok(radio_client) => {
+        let mut client = radio_client.lock().await;
+        client.set_radio_config(self.radio_module, config).await
+          .map_err(InitRadioClientError::ControllerError)?;
+        client.set_modulation(self.radio_module, modulation).await
+          .map_err(InitRadioClientError::ControllerError)?;
+        drop(client);
+        Ok(radio_client)
+      }
+      Err(err) => Err(InitRadioClientError::ControllerError(err))
+    }
+  }
+}
+
+fn default_radio_modulation() -> Modulation {
+  Modulation::Ofdm(OfdmModulation::default())
 }
 
 pub struct MavlinkParser {
