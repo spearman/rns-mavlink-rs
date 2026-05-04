@@ -1,4 +1,4 @@
-use std::str;
+use std::{process, str};
 
 use clap::Parser;
 use kaonic_reticulum::KaonicCtrlInterface;
@@ -32,11 +32,14 @@ pub struct Command {
   pub udp_listen_port: Option<u16>,
   #[clap(short = 'f', long, requires = "udp_listen_port",
     help = "Reticulum UDP forward address")]
-  pub udp_forward_address: Option<std::net::SocketAddr>
+  pub udp_forward_address: Option<std::net::SocketAddr>,
+  #[arg(short, long,
+    help = "[Optional] Reticulum private ID from name string, overrides saved seed file")]
+  pub id_seed: Option<String>
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), process::ExitCode> {
   // parse command line args
   let cmd = Command::parse();
   // load config
@@ -52,8 +55,18 @@ async fn main() {
     .default_filter_or(&config.log_level)).init();
   log::info!("gc start");
   // start reticulum
-  log::info!("starting reticulum");
-  let id = PrivateIdentity::new_from_name("mavlink-rns-gc");
+  let id = {
+    let id_seed = if let Some(id_seed) = cmd.id_seed {
+      id_seed
+    } else {
+      rns_mavlink::load_or_create_id_seed("gc-id-seed.txt").map_err(|err|{
+        log::error!("error loading id seed: {err}");
+        process::ExitCode::FAILURE
+      })?
+    };
+    PrivateIdentity::new_from_name(&id_seed)
+  };
+  log::info!("starting reticulum with identity: {}", id.address_hash().to_hex_string());
   let mut transport = Transport::new(TransportConfig::new("gc", &id, true));
   // create destinations
   let data_destination = transport.add_destination(id.clone(),
@@ -73,7 +86,7 @@ async fn main() {
       Ok(radio_client) => radio_client,
       Err(err) => {
         log::error!("error creating kaonic-ctrl radio client: {err:?}");
-        std::process::exit(1)
+        return Err(process::ExitCode::FAILURE)
       }
     };
     let _ = transport.iface_manager().lock().await.spawn(
@@ -99,4 +112,5 @@ async fn main() {
   } else {
     log::info!("gc exit");
   }
+  Ok(())
 }

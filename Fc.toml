@@ -4,7 +4,7 @@ log_mavlink = 10000000
 #serial_port = "/dev/ttyACM0"
 serial_port = "/dev/ttySTM1"
 serial_baud = 57600
-gc_data_destination = "32f0c4dc2a9f9bdee3897ccf82365bed"
+gc_data_destination = "b2bc0b5cfca10ad38d7abb61606b55b8"
 
 radio_module = 0
 
