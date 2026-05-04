@@ -86,7 +86,8 @@ async fn main() -> Result<(), process::ExitCode> {
         process::ExitCode::FAILURE
       })?;
     let _ = transport.iface_manager().lock().await.spawn(
-      KaonicCtrlInterface::new(radio_client.clone(), 0, None),
+      KaonicCtrlInterface::new(radio_client.clone(), config.radio_config.radio_module,
+        None),
       KaonicCtrlInterface::spawn);
     Some(radio_client)
   } else {
