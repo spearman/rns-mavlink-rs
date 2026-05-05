@@ -31,14 +31,6 @@ struct ConfigResponse {
     config: String,
 }
 
-pub fn router(state: GcAppState) -> Router {
-    Router::new()
-        .route("/", get(handler_get_page))
-        .route("/api/config", get(handler_get_config).put(handler_put_config))
-        .route("/api/restart", post(handler_restart))
-        .with_state(state)
-}
-
 async fn handler_get_page() -> Html<String> {
     get_page("RNS-Mavlink GC Dashboard", CONFIG_PATH)
 }
@@ -93,19 +85,24 @@ async fn handler_restart() -> impl IntoResponse {
 }
 
 pub async fn start_server(bind_addr: SocketAddr, state: GcAppState) -> Result<(), String> {
-    let app = router(state);
+    let app = Router::new()
+        .route("/", get(handler_get_page))
+        .route("/api/config", get(handler_get_config).put(handler_put_config))
+        .route("/api/restart", post(handler_restart))
+        .with_state(state);
 
     let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
         PLUGIN_TLS_CERT_FILE,
         PLUGIN_TLS_KEY_FILE,
     )
     .await
-    .map_err(|err| {
-        format!(
+    .unwrap_or_else(|err| {
+        log::error!(
             "Failed to load TLS certificates {} and {}: {err}",
             PLUGIN_TLS_CERT_FILE, PLUGIN_TLS_KEY_FILE
-        )
-    })?;
+        );
+        std::process::exit(1);
+    });
 
     log::info!("GC dashboard listening on https://{bind_addr}");
 
