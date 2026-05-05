@@ -2,7 +2,7 @@ use std::{future, process};
 use std::sync::Arc;
 
 use rolling_file::{BasicRollingFileAppender, RollingConditionBasic};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio;
 use tokio::time;
 use tokio::sync::Mutex;
@@ -29,7 +29,7 @@ pub struct Fc {
   radio_client: Option<SharedRadioClient>
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
   pub log_level: String,
   #[serde(default)]

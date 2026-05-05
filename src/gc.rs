@@ -2,7 +2,7 @@ use std::net;
 use std::sync::Arc;
 
 use rolling_file::{BasicRollingFileAppender, RollingConditionBasic};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
@@ -18,6 +18,8 @@ use crate::{
   THROUGHPUT_LOG_FREQUENCY_SECONDS
 };
 
+pub const CONFIG_PATH: &str = "Gc.toml";
+
 pub struct Gc {
   config: Config,
   radio_client: Option<SharedRadioClient>
@@ -25,7 +27,7 @@ pub struct Gc {
 
 const fn default_announce_interval_seconds() -> u64 { 5 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
   pub log_level: String,
   #[serde(default)]

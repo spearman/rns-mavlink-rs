@@ -6,6 +6,8 @@ license = "MIT"
 edition = "2024"
 
 [dependencies]
+axum = { version = "0.8", features = ["json"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 bytes = "1.*"
 chrono = "0.4.*"
 clap = { version= "4.*", features= ["derive"] }
