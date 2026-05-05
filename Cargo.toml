@@ -17,6 +17,7 @@ mavlink = { version = "0.17.*", features = ["std", "common", "serde"], default-f
 rand = { version = "0.10.*", features = ["chacha"] }
 rolling-file = "0.2.*"
 rusqlite = { version = "0.39.*", features = ["bundled"] }
+rustls = { version = "0.23", features = ["ring"] }
 serde = { version = "1.*", features = ["derive"] }
 serde_json = "1.*"
 tokio = { version = "1.*", features = ["full"] }
