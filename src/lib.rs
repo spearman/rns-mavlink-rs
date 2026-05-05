@@ -10,12 +10,13 @@ use radio_common::modulation::OfdmModulation;
 use rand;
 use rolling_file::BasicRollingFileAppender;
 use rusqlite;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json;
 use tokio::sync::Mutex;
 use tokio::time;
 use tokio_util::sync::CancellationToken;
 
+pub mod dashboard;
 pub mod fc;
 pub mod gc;
 
@@ -45,7 +46,7 @@ pub fn load_or_create_id_seed(path: &str) -> Result<String, std::io::Error> {
   })
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct RadioConfig {
   /// 0 or 1
   #[serde(default)]
