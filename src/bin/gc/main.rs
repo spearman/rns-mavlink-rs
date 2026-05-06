@@ -1,12 +1,9 @@
 use std::net::SocketAddr;
 use std::process;
-use std::sync::Arc;
 
 use clap::Parser;
 use kaonic_reticulum::KaonicCtrlInterface;
 use log;
-use tokio::sync::RwLock;
-use toml;
 
 use reticulum::destination::DestinationName;
 use reticulum::identity::PrivateIdentity;
@@ -14,8 +11,6 @@ use reticulum::iface::udp::UdpInterface;
 use reticulum::transport::{Transport, TransportConfig};
 
 use rns_mavlink;
-
-use crate::dashboard::GcAppState;
 
 mod dashboard;
 
@@ -67,12 +62,12 @@ async fn main() -> Result<(), process::ExitCode> {
   log::info!("gc start");
 
   // launch plugin dashboard
-  let dashboard_state = GcAppState {
-    config: Arc::new(RwLock::new(config.clone())),
-  };
+  if rustls::crypto::CryptoProvider::get_default().is_none() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+  }
   let http_bind = cmd.http_bind;
   tokio::spawn(async move {
-    if let Err(err) = dashboard::start_server(http_bind, dashboard_state).await {
+    if let Err(err) = dashboard::start_server(http_bind).await {
       log::error!("dashboard server error: {err}");
     }
   });
