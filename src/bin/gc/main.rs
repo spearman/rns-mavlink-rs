@@ -67,6 +67,9 @@ async fn main() -> Result<(), process::ExitCode> {
   log::info!("gc start");
 
   // launch plugin dashboard
+  if rustls::crypto::CryptoProvider::get_default().is_none() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+  }
   let dashboard_state = GcAppState {
     config: Arc::new(RwLock::new(config.clone())),
   };
