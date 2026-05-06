@@ -218,6 +218,21 @@ pub fn get_page(title: &str, config_name: &str) -> Html<String> {
         }}
       }}
 
+      async function waitForService(maxAttempts = 30, interval = 500) {{
+        for (let i = 0; i < maxAttempts; i++) {{
+          await new Promise(r => setTimeout(r, interval));
+          try {{
+            const resp = await fetch('/api/config', {{ method: 'GET' }});
+            if (resp.ok) {{
+              return true;
+            }}
+          }} catch (e) {{
+            // Service not yet available, continue polling
+          }}
+        }}
+        return false;
+      }}
+
       async function restartService() {{
         if (!confirm('Are you sure you want to restart the service?')) {{
           return;
@@ -225,12 +240,22 @@ pub fn get_page(title: &str, config_name: &str) -> Html<String> {
         restartBtn.disabled = true;
         showStatus('Restarting service...', 'info');
         try {{
-          const resp = await fetch('/api/restart', {{ method: 'POST' }});
-          const data = await resp.json().catch(() => ({{}}));
-          if (!resp.ok) {{
-            throw new Error(data.detail || 'HTTP ' + resp.status);
+          // Send restart request - expect this to fail due to connection loss
+          await fetch('/api/restart', {{ method: 'POST' }}).catch(() => {{}});
+
+          // Wait a moment for the service to begin shutting down
+          await new Promise(r => setTimeout(r, 1000));
+
+          // Poll until the service comes back up
+          showStatus('Waiting for service to restart...', 'info');
+          const isUp = await waitForService();
+
+          if (isUp) {{
+            showStatus('Service restarted successfully', 'success');
+            loadConfig();
+          }} else {{
+            showStatus('Service restart timed out - please refresh the page', 'error');
           }}
-          showStatus(data.detail || 'Service restart initiated', 'success');
         }} catch (err) {{
           showStatus('Error restarting service: ' + err.message, 'error');
         }} finally {{
