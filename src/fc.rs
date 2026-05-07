@@ -7,14 +7,12 @@ use tokio;
 use tokio::time;
 use tokio::sync::Mutex;
 
+use reticulum::destination::SingleInputDestination;
 use reticulum::destination::link::{Link, LinkEvent, LinkStatus};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
-use crate::{
-  log_mavlink, MavlinkParser, RadioConfig, SharedRadioClient, Throughput,
-  THROUGHPUT_LOG_FREQUENCY_SECONDS
-};
+use crate::*;
 
 pub const CONFIG_PATH: &str = "Fc.toml";
 /// When the fc is disconnected the port will read 0 bytes and reconnecting the
@@ -24,8 +22,11 @@ pub const CONFIG_PATH: &str = "Fc.toml";
 const SERIAL_PORT_READ_0_BYTES_LIMIT: usize = 30;
 const DATA_LINK_REQUEST_TIMEOUT_SECONDS: u64 = 15;
 
+const fn default_announce_interval_seconds() -> u64 { 5 }
+
 pub struct Fc {
   config: Config,
+  fc_destination: Arc<Mutex<SingleInputDestination>>,
   radio_client: Option<SharedRadioClient>
 }
 
@@ -38,6 +39,8 @@ pub struct Config {
   pub log_mavlink: Option<u64>,
   pub serial_port: String,
   pub serial_baud: u32,
+  #[serde(default="default_announce_interval_seconds")]
+  pub announce_interval_seconds: u64,
   // TODO: deserialize AddressHash
   pub gc_data_destination: String,
   #[serde(flatten)]
@@ -53,10 +56,12 @@ pub enum Error {
 }
 
 impl Fc {
-  pub fn new(config: Config, radio_client: Option<SharedRadioClient>)
-    -> Result<Self, ()>
-  {
-    let fc = Fc { config, radio_client };
+  pub fn new(
+    config: Config,
+    fc_destination: Arc<Mutex<SingleInputDestination>>,
+    radio_client: Option<SharedRadioClient>
+  ) -> Result<Self, ()> {
+    let fc = Fc { config, fc_destination, radio_client };
     Ok(fc)
   }
 
@@ -73,6 +78,8 @@ impl Fc {
       });
     let gc_data_destination =
       parse_destination_hash(&self.config.gc_data_destination, "data")?;
+    let fc_destination = self.fc_destination.clone();
+    let fc_destination_hash = fc_destination.lock().await.desc.address_hash;
     log::debug!("gc data destination: {gc_data_destination}");
     let serial_port = self.config.serial_port.clone();
     log::info!("setting serial port {serial_port} baud {}", self.config.serial_baud);
@@ -121,6 +128,13 @@ impl Fc {
         }
         time::sleep(time::Duration::from_secs(10)).await
       }
+    };
+    // send announces
+    let announce_loop = async || loop {
+      log::debug!("sending announce");
+      transport.send_announce(&fc_destination, None).await;
+      time::sleep(time::Duration::from_secs(self.config.announce_interval_seconds))
+        .await;
     };
     // set up links
     let data_link_request_ts: Arc<Mutex<Option<time::Instant>>> =
@@ -187,6 +201,7 @@ impl Fc {
     let mut read_port_loop = async || {
       log::info!("reading from serial port {}", serial_port);
       let mut buf = vec![0u8; 2usize.pow(16)];
+      let mut chunk = vec![0u8; reticulum::packet::PACKET_MDU / 2 + 1];
       let mut read_0_bytes_counter = 0;
       let mut mavlink_parser = MavlinkParser::new();
       loop {
@@ -206,6 +221,7 @@ impl Fc {
             }
             if let Some(link_mutex) = data_link.lock().await.as_ref() {
               for data in buf[..n].chunks(reticulum::packet::PACKET_MDU / 2) {
+                chunk[1..data.len()+1].copy_from_slice(data);
                 let link = link_mutex.lock().await;
                 match link.status() {
                   LinkStatus::Closed => {
@@ -219,7 +235,7 @@ impl Fc {
                   LinkStatus::Active | LinkStatus::Stale => {}
                 }
                 log::trace!("sending on link ({})", link.id());
-                match link.data_packet(data) {
+                match link.data_packet(&chunk[..1+data.len()]) {
                   Ok(packet) => {
                     drop(link); // drop before sending to prevent deadlock
                     transport.send_packet(packet).await;
@@ -244,6 +260,13 @@ impl Fc {
     let mut link_event_loop = async || {
       let mut out_link_events = transport.out_link_events();
       let mut mavlink_parser = MavlinkParser::new();
+      // buffer to contains [destination_hash, nonce] to sign over
+      let mut sig_buffer = [0u8; SIG_BUFFER_SIZE];
+      // outgoing auth data [auth_byte, destination_hash, signature]
+      let mut auth_buffer = [LINK_AUTH_BYTE; 1 + AUTH_SIZE];
+      sig_buffer[..ADDRESS_HASH_SIZE].copy_from_slice(fc_destination_hash.as_slice());
+      auth_buffer[1..1 + ADDRESS_HASH_SIZE]
+        .copy_from_slice(fc_destination_hash.as_slice());
       loop {
         match out_link_events.recv().await {
           Ok(link_event) => {
@@ -253,20 +276,41 @@ impl Fc {
               match link_event.event {
                 LinkEvent::Data(payload) => {
                   log::trace!("data link {} payload ({})", link_event.id, payload.len());
-                  // data packet
-                  match port_writer.write_all(&payload.as_slice()).await {
-                    Ok(()) => log::trace!("port sent {} bytes", payload.len()),
-                    Err(err) => {
-                      log::error!("port error sending bytes: {err:?}");
-                      break
+                  let data = payload.as_slice();
+                  if data[0] == 0x0 {
+                    // data packet
+                    match port_writer.write_all(&payload.as_slice()).await {
+                      Ok(()) => log::trace!("port sent {} bytes", payload.len()),
+                      Err(err) => {
+                        log::error!("port error sending bytes: {err:?}");
+                        break
+                      }
                     }
-                  }
-                  if self.config.log_throughput {
-                    throughput.lock().await.recv_packet(payload.len() as u32);
-                  }
-                  if let Some(mavlink_log) = mavlink_log.clone() {
-                    let frames = mavlink_parser.parse(payload.as_slice());
-                    log_mavlink(mavlink_log, "ground station link", frames).await;
+                    if self.config.log_throughput {
+                      throughput.lock().await.recv_packet(payload.len() as u32);
+                    }
+                    if let Some(mavlink_log) = mavlink_log.clone() {
+                      let frames = mavlink_parser.parse(payload.as_slice());
+                      log_mavlink(mavlink_log, "ground station link", frames).await;
+                    }
+                  } else {
+                    debug_assert_eq!(data[0], LINK_AUTH_BYTE);
+                    // link auth request: send identification
+                    log::debug!("got nonce: sending link auth on link {} to {}",
+                      link_event.id, link_event.address_hash);
+                    // copy nonce
+                    sig_buffer[ADDRESS_HASH_SIZE..]
+                      .copy_from_slice(&payload.as_slice()[1..]);
+                    // sign fc_destination + nonce
+                    let signature = fc_destination.lock().await.identity
+                      .sign(&sig_buffer);
+                    auth_buffer[1 + ADDRESS_HASH_SIZE..]
+                      .copy_from_slice(&signature.to_bytes());
+                    if let Some(link) = data_link.lock().await.as_ref() {
+                      let packet = link.lock().await.data_packet(auth_buffer.as_slice())
+                        .unwrap();
+                      transport.send_packet(packet).await;
+                    }
                   }
                 }
                 LinkEvent::Activated => {
@@ -310,6 +354,7 @@ impl Fc {
         log::info!("throughput log loop exited: shutting down"),
       _ = ping_radio_client_loop() =>
         log::info!("ping radio client loop exited: shutting down"),
+      _ = announce_loop() => log::info!("announce loop exited: shutting down"),
       _ = read_port_loop() => log::info!("read port loop exited: shutting down"),
       _ = link_event_loop() => log::info!("link event loop exited: shutting down"),
       _ = link_loop() => log::info!("link loop exited: shutting down"),

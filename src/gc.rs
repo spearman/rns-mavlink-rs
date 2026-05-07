@@ -1,6 +1,8 @@
 use std::net;
 use std::sync::Arc;
 
+use ed25519_dalek::Signature;
+use rand::rngs::SysRng;
 use rolling_file::{BasicRollingFileAppender, RollingConditionBasic};
 use serde::{Deserialize, Serialize};
 use tokio;
@@ -8,24 +10,22 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::time;
 
-use reticulum::destination::SingleInputDestination;
+use reticulum::destination::{SingleInputDestination, SingleOutputDestination};
 use reticulum::destination::link::{LinkEvent, LinkId, LinkStatus};
 use reticulum::transport::Transport;
 use reticulum::hash::AddressHash;
 
-use crate::{
-  log_mavlink, MavlinkParser, RadioConfig, SharedRadioClient, Throughput,
-  THROUGHPUT_LOG_FREQUENCY_SECONDS
-};
+use crate::*;
 
 pub const CONFIG_PATH: &str = "Gc.toml";
+pub const LINK_AUTH_TIMEOUT: time::Duration = time::Duration::from_secs(15);
+
+const fn default_announce_interval_seconds() -> u64 { 5 }
 
 pub struct Gc {
   config: Config,
   radio_client: Option<SharedRadioClient>
 }
-
-const fn default_announce_interval_seconds() -> u64 { 5 }
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -49,9 +49,25 @@ pub struct Config {
 
 #[derive(Debug)]
 pub enum Error {
-  IoError(std::io::Error)
+  IoError(std::io::Error),
+  RnsError(reticulum::error::RnsError)
 }
 
+/// Link authorization state machine.
+#[derive(Debug)]
+enum LinkState {
+  Disconnected,
+  /// Instant is the timeout for this auth
+  PendingAuth(time::Instant, LinkId, Nonce),
+  /// Instant is the timeout for this auth
+  PendingKey(time::Instant, LinkId, Nonce, AuthPayload),
+  Authenticated(LinkId)
+}
+
+type Nonce = [u8; AUTH_NONCE_BYTES];
+type AuthPayload = [u8; AUTH_SIZE];
+
+/// Mavlink heartbeat used for probing for ground station server
 fn heartbeat() -> Result<Vec<u8>, mavlink::error::MessageWriteError>  {
     use std::sync::atomic::{AtomicU8, Ordering};
     use mavlink::MavHeader;
@@ -97,7 +113,14 @@ impl Gc {
     data_destination: Arc<Mutex<SingleInputDestination>>
   ) -> Result<(), Error> {
     log::info!("running gc");
+    let fc_destination = AddressHash::new_from_hex_string(&self.config.fc_destination)
+      .map_err(|err|{
+        log::error!("error parsing fc destination hash: {err:?}");
+        Error::RnsError(err)
+      })?;
+    log::info!("fc destination: {fc_destination}");
     let data_destination_hash = data_destination.lock().await.desc.address_hash;
+    let link_state = Arc::new(Mutex::new(LinkState::Disconnected));
     let throughput = Arc::new(Mutex::new(Throughput::new_gc()));
     let mavlink_log = if let Some(max_size) = self.config.log_mavlink {
       let f = BasicRollingFileAppender::new("gc-mavlink.log",
@@ -126,26 +149,38 @@ impl Gc {
       }
     };
     // send announces
-    let data_link_id: Arc<Mutex<Option<LinkId>>> = Arc::new(Mutex::new(None));
-    let announce_loop = async || loop {
+    let send_announce_loop = async || loop {
       log::debug!("sending announce");
       transport.send_announce(&data_destination, None).await;
       time::sleep(time::Duration::from_secs(self.config.announce_interval_seconds))
         .await;
-      if let Some(link_id) = data_link_id.lock().await.as_ref() {
-        if let Some(link) = transport.find_in_link(link_id).await {
-          let status = link.lock().await.status();
-          match status {
-            // the link_id should only be set by the LinkActivated event; the link
-            // should never become pending or handshake after this event
-            LinkStatus::Closed |  LinkStatus::Pending | LinkStatus::Handshake => {
-              log::warn!("data link is not open {status:?}, discarding link");
-              *data_link_id.lock().await = None;
+      { // check link state and auth timeout
+        let mut link_state = link_state.lock().await;
+        link_state.check_status(&transport).await;
+        link_state.auth_timeout(&transport).await;
+      }
+    };
+    // recv announces
+    let recv_announce_loop = async || {
+      const ANNOUNCE_RECV_TIMEOUT: time::Duration = time::Duration::from_secs(5);
+      let mut announce_recv = transport.recv_announces().await;
+      loop {
+        match time::timeout(ANNOUNCE_RECV_TIMEOUT, announce_recv.recv()).await {
+          Ok(Ok(announce)) => {
+            let destination = announce.destination.lock().await;
+            let address = destination.desc.address_hash;
+            if address == fc_destination {
+              log::debug!("got fc destination announce {address}");
+              link_state.lock().await.got_fc_announce(&transport, &destination).await;
+            } else {
+              log::debug!("got announce: {address}");
             }
-            _ => {}
           }
-        } else {
-          log::error!("could not find link {link_id}");
+          Ok(Err(err)) => {
+            log::error!("error receiving announces: {err}");
+            break
+          }
+          Err(_) => {}
         }
       }
     };
@@ -248,9 +283,8 @@ impl Gc {
                 Ok(text) => log::trace!("received from {}: {}", src, text),
                 Err(_) => log::trace!("received non-UTF8 data from {}: {:?}", src, data),
               }
-              let link_id = data_link_id.lock().await;
-              if let Some(link_id) = link_id.as_ref() {
-                if let Some(link) = transport.find_in_link(link_id).await {
+              if let Some(link_id) = link_state.lock().await.authenticated_link_id() {
+                if let Some(link) = transport.find_in_link(&link_id).await {
                   // if the link is active, forward to flight controller
                   let link = link.lock().await;
                   log::trace!("sending data on link ({link_id})");
@@ -306,34 +340,57 @@ impl Gc {
               match link_event.event {
                 LinkEvent::Data(payload) => {
                   log::trace!("data link {} payload ({})", link_event.id, payload.len());
-                  if let Some(target) = ground_station_address.lock().await.clone() {
-                    log::trace!("send payload ({}) to {target}", payload.len());
-                    match socket.send_to(&payload.as_slice(), target).await {
-                      Ok(n) => log::trace!("socket sent {n} bytes"),
-                      Err(err) => {
-                        log::error!("socket error sending bytes: {err:?}");
-                        break
+                  let data = payload.as_slice();
+                  if data[0] == 0x0 {
+                    // data packet
+                    if let Some(link_id) = link_state.lock().await
+                      .authenticated_link_id()
+                    {
+                      if link_id != link_event.id {
+                        log::warn!("received data event on non-autheticated link {}",
+                          link_event.id);
+                        let _ = transport.link_close(link_event.id).await.map_err(|err|
+                          log::error!("error closing link {link_id}: {err:?}"));
                       }
-                    }
-                    if self.config.log_throughput {
-                      throughput.lock().await.recv_packet(payload.len() as u32);
-                    }
-                    if let Some(mavlink_log) = mavlink_log.clone() {
-                      let frames = mavlink_parser.parse(payload.as_slice());
-                      log_mavlink(mavlink_log, "flight controller link", frames).await;
+                      if let Some(target) = ground_station_address.lock().await.clone() {
+                        log::trace!("send payload ({}) to {target}", payload.len());
+                        match socket.send_to(&payload.as_slice(), target).await {
+                          Ok(n) => log::trace!("socket sent {n} bytes"),
+                          Err(err) => {
+                            log::error!("socket error sending bytes: {err:?}");
+                            break
+                          }
+                        }
+                        if self.config.log_throughput {
+                          throughput.lock().await.recv_packet(payload.len() as u32);
+                        }
+                        if let Some(mavlink_log) = mavlink_log.clone() {
+                          let frames = mavlink_parser.parse(payload.as_slice());
+                          log_mavlink(mavlink_log, "flight controller link", frames).await;
+                        }
+                      } else {
+                        log::trace!("dropping data packet: no ground station address");
+                      }
+                    } else {
+                      log::trace!("dropping data packet: link not authenticated");
                     }
                   } else {
-                    log::trace!("dropping payload: no ground station address");
+                    // auth packet
+                    debug_assert_eq!(data[0], LINK_AUTH_BYTE);
+                    let auth_data = &data[1..1 + AUTH_SIZE];
+                    link_state.lock().await
+                      .got_auth(&transport, link_event.id, fc_destination, auth_data)
+                      .await;
                   }
                 }
                 LinkEvent::Activated => {
                   log::info!("data link activated {}", link_event.id);
-                  let mut link_id = data_link_id.lock().await;
-                  *link_id = Some(link_event.id);
+                  link_state.lock().await.link_activated(&transport, link_event.id)
+                    .await
                 }
                 LinkEvent::Closed => {
                   log::info!("data link closed {}", link_event.id);
-                  let _ = data_link_id.lock().await.take();
+                  link_state.lock().await.link_closed().await;
                 }
                 LinkEvent::Proof(_) => {}
               }
@@ -365,11 +422,237 @@ impl Gc {
         log::info!("throughput log loop exited: shutting down"),
       _ = ping_radio_client_loop() =>
         log::info!("ping radio client loop exited: shutting down"),
-      _ = announce_loop() => log::info!("announce loop exited: shutting down"),
+      _ = send_announce_loop() => log::info!("send announce loop exited: shutting down"),
+      _ = recv_announce_loop() => log::info!("recv announce loop exited: shutting down"),
       _ = socket_loop() => log::info!("socket loop exited: shutting down"),
       _ = link_event_loop() => log::info!("link event loop exited: shutting down"),
       _ = tokio::signal::ctrl_c() => log::info!("got ctrl-c: shutting down")
     }
     Ok(())
+  }
+}
+
+impl LinkState {
+  pub fn link_id(&self) -> Option<LinkId> {
+    match self {
+      LinkState::PendingAuth(_, id, _) | LinkState::PendingKey(_, id, _, _) |
+      LinkState::Authenticated(id) => Some(*id),
+      LinkState::Disconnected => None
+    }
+  }
+
+  pub fn authenticated_link_id(&self) -> Option<LinkId> {
+    match self {
+      LinkState::Authenticated(id) => Some(*id),
+      _ => None
+    }
+  }
+
+  /// Disconnected -> PendingAuth
+  pub async fn link_activated(&mut self, transport: &Transport, link_id: LinkId) {
+    use rand::TryRng;
+    match self {
+      LinkState::PendingAuth(_, id, _) |
+      LinkState::PendingKey(_, id, _, _) |
+      LinkState::Authenticated(id) => {
+        log::debug!("got link activated event for link {link_id} but link {id} is \
+          already active");
+        return
+      }
+      LinkState::Disconnected => {} // continue
+    }
+    // send nonce to request auth
+    let mut nonce = [0u8; AUTH_NONCE_BYTES];
+    let mut nonce_buffer = [LINK_AUTH_BYTE; AUTH_NONCE_BYTES + 1];
+    let close_link = async || {
+      let _ = transport.link_close(link_id).await.map_err(|err|
+        log::error!("error closing link {link_id}: {err:?}"));
+    };
+    if let Err(err) = SysRng.try_fill_bytes(&mut nonce[..]) {
+      log::error!("error filling nonce bytes: {err}");
+      close_link().await;
+      return
+    }
+    if let Some(link) = transport.find_in_link(&link_id).await.clone() {
+      log::debug!("sending nonce for link {link_id}");
+      nonce_buffer[1..].copy_from_slice(&nonce);
+      let link = link.lock().await;
+      match link.data_packet(&nonce_buffer) {
+        Ok(packet) => {
+          drop(link);
+          transport.send_packet(packet).await;
+        }
+        Err(err) => {
+          log::error!("error creating nonce packet, closing link: {err:?}");
+          close_link().await;
+          return
+        }
+      }
+    } else {
+      log::error!("error sending nonce: could not find link {link_id}");
+      close_link().await;
+      return
+    }
+    *self = LinkState::PendingAuth(
+      time::Instant::now() + LINK_AUTH_TIMEOUT,
+      link_id,
+      nonce)
+  }
+
+  /// PendingAuth|PendingKey -> Disconnected
+  pub async fn auth_timeout(&mut self, transport: &Transport) {
+    match self {
+      LinkState::PendingAuth(timeout, link_id, _) |
+      LinkState::PendingKey(timeout, link_id, _, _) =>
+        if time::Instant::now() >= *timeout {
+          let _ = transport.link_close(*link_id).await.map_err(|err|
+            log::error!("error closing link {link_id}: {err:?}"));
+          *self = LinkState::Disconnected;
+        }
+      LinkState::Disconnected | LinkState::Authenticated(_) => {}
+    }
+  }
+
+  pub async fn got_auth(&mut self,
+    transport: &Transport,
+    link_id: LinkId,
+    fc_destination: AddressHash,
+    auth_data: &[u8]
+  ) {
+    let close_link = async || {
+      let _ = transport.link_close(link_id).await.map_err(|err|
+        log::error!("error closing link {link_id}: {err:?}"));
+    };
+    // check state and link id and get sent nonce
+    let (timeout, sent_nonce) = match self {
+      LinkState::PendingAuth(timeout, id, nonce) => {
+        if *id != link_id {
+          log::warn!("waiting for auth on link {id} but got auth data on link \
+            {link_id}");
+          close_link().await;
+        }
+        (*timeout, *nonce)
+      }
+      state => {
+        log::warn!("invalid link state for got auth event: {state:?}");
+        return
+      }
+    };
+    // check payload size
+    let auth_payload = match AuthPayload::try_from (auth_data) {
+      Ok(auth) => auth,
+      Err(err) => {
+        log::error!("auth payload not valid size: {err}");
+        close_link().await;
+        *self = LinkState::Disconnected;
+        return
+      }
+    };
+    // check that auth destination matches fc destination
+    let auth_dest = match auth_payload[..ADDRESS_HASH_SIZE].try_into()
+      .map(AddressHash::new)
+    {
+      Ok(dest) => dest,
+      Err(err) => {
+        log::error!("invalid auth destination hash: {err}");
+        close_link().await;
+        *self = LinkState::Disconnected;
+        return
+      }
+    };
+    if auth_dest != fc_destination {
+      log::warn!("{auth_dest} is not authorized: only {fc_destination} can connect");
+      close_link().await;
+      *self = LinkState::Disconnected;
+      return
+    }
+    // validate signature
+    if let Some(destination) = transport.get_out_destination(&auth_dest).await {
+      let destination = destination.lock().await;
+      debug_assert_eq!(destination.desc.address_hash, auth_dest);
+      match validate_signature(&*destination, link_id, auth_payload, sent_nonce) {
+        Ok(()) => {
+          *self = LinkState::Authenticated(link_id);
+        }
+        Err(()) => {
+          close_link().await;
+          *self = LinkState::Disconnected;
+        }
+      }
+    } else {
+      log::debug!("could not yet authenticate peer {auth_dest} on link {link_id}: \
+        missing verify key");
+      *self = LinkState::PendingKey(timeout, link_id, sent_nonce, auth_payload);
+    }
+  }
+
+  pub async fn got_fc_announce(&mut self,
+    transport: &Transport,
+    destination: &SingleOutputDestination
+  ) {
+    let (link_id, sent_nonce, auth_payload) = match self {
+      LinkState::PendingKey(_, id, nonce, auth) => (*id, *nonce, *auth),
+      _ => return
+    };
+    match validate_signature(&*destination, link_id, auth_payload, sent_nonce) {
+      Ok(()) => {
+        *self = LinkState::Authenticated(link_id);
+      }
+      Err(()) => {
+        let _ = transport.link_close(link_id).await.map_err(|err|
+          log::error!("error closing link {link_id}: {err:?}"));
+        *self = LinkState::Disconnected;
+      }
+    }
+  }
+
+  pub async fn check_status(&mut self, transport: &Transport) {
+    if let Some(link_id) = self.link_id() {
+      if let Some(link) = transport.find_in_link(&link_id).await {
+        let status = link.lock().await.status();
+        match status {
+          // the link ID should only be set by the LinkActivated event; the link
+          // should never become pending or handshake after this event
+          LinkStatus::Closed |  LinkStatus::Pending | LinkStatus::Handshake => {
+            log::warn!("data link is not open {status:?}, discarding link");
+            *self = LinkState::Disconnected;
+          }
+          _ => {}
+        }
+      } else {
+        log::error!("could not find link {link_id}");
+        *self = LinkState::Disconnected;
+      }
+    }
+  }
+
+  pub async fn link_closed(&mut self) {
+    *self = LinkState::Disconnected;
+  }
+}
+
+fn validate_signature(
+  destination: &SingleOutputDestination,
+  link_id: LinkId,
+  auth_payload: AuthPayload,
+  sent_nonce: Nonce
+) -> Result<(), ()> {
+  let auth_dest = destination.desc.address_hash;
+  let mut sig_buffer = [0u8; SIG_BUFFER_SIZE];
+  match Signature::from_slice(&auth_payload[ADDRESS_HASH_SIZE..]) {
+    Ok(signature) => {
+      sig_buffer[..ADDRESS_HASH_SIZE]
+        .copy_from_slice(&auth_payload[..ADDRESS_HASH_SIZE]);
+      sig_buffer[ADDRESS_HASH_SIZE..].copy_from_slice(&sent_nonce);
+      destination.identity.verifying_key.verify_strict(&sig_buffer, &signature)
+        .map(|()| log::info!("authenticated fc peer {auth_dest} on link {link_id}"))
+        .map_err(|err| log::error!("auth signature validation failed for {auth_dest} \
+          on link {link_id}: invalid signature: {err}"))
+    }
+    Err(err) => {
+      log::error!("failed to load signature bytes for peer {auth_dest} auth  packet: \
+        {err}");
+      Err(())
+    }
   }
 }

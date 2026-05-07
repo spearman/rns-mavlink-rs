@@ -2,12 +2,14 @@ use std::env;
 use std::sync::Arc;
 
 use chrono;
+use ed25519_dalek::SIGNATURE_LENGTH;
 use kaonic_ctrl::error::ControllerError;
 use kaonic_reticulum::KaonicCtrlInterface;
 use kaonic_reticulum::RadioClient;
 use radio_common::Modulation;
 use radio_common::modulation::OfdmModulation;
 use rand;
+use reticulum::hash::ADDRESS_HASH_SIZE;
 use rolling_file::BasicRollingFileAppender;
 use rusqlite;
 use serde::{Deserialize, Serialize};
@@ -24,6 +26,11 @@ pub use fc::Fc;
 pub use gc::Gc;
 
 pub(crate) const THROUGHPUT_LOG_FREQUENCY_SECONDS: u64 = 2;
+/// Indicates message is a peer authentication payload
+pub(crate) const LINK_AUTH_BYTE: u8 = 0xFF;
+pub(crate) const AUTH_NONCE_BYTES: usize = 10;
+pub(crate) const SIG_BUFFER_SIZE: usize = ADDRESS_HASH_SIZE + AUTH_NONCE_BYTES;
+pub(crate) const AUTH_SIZE: usize = ADDRESS_HASH_SIZE + SIGNATURE_LENGTH;
 
 type SharedRadioClient = Arc<Mutex<RadioClient>>;
 
