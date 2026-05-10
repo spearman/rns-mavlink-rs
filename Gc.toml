@@ -5,7 +5,7 @@ log_mavlink = 1000000
 gc_udp_subnet = "192.168.1.0"
 gc_udp_port = 14550
 gc_reply_port = 9999
-fc_destination = "db332f13541eb2e4b47d02923fbbcb9a"
+fc_destination = "279640b525d99a9b835227a6ae39fdc2"
 
 radio_module = 0
 

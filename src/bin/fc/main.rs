@@ -5,7 +5,7 @@ use clap::Parser;
 use kaonic_reticulum::KaonicCtrlInterface;
 use log;
 
-use reticulum::destination::{DestinationName, SingleInputDestination};
+use reticulum::destination::DestinationName;
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::udp::UdpInterface;
 use reticulum::transport::{Transport, TransportConfig};
@@ -85,10 +85,10 @@ async fn main() -> Result<(), process::ExitCode> {
     PrivateIdentity::new_from_name(&id_seed)
   };
   log::info!("starting reticulum with identity: {}", id.address_hash().to_hex_string());
-  let transport = Transport::new(TransportConfig::new("fc", &id, true));
-  let destination = SingleInputDestination::new(id,
-    DestinationName::new("rns_mavlink", "fc"));
-  log::info!("created destination: {}", destination.desc.address_hash);
+  let mut transport = Transport::new(TransportConfig::new("fc", &id, true));
+  let destination = transport.add_destination(id.clone(),
+    DestinationName::new("rns_mavlink", "fc.auth")).await;
+  log::info!("created destination: {}", destination.lock().await.desc.address_hash);
   let radio_client = if let Some(server_addr) = cmd.kaonic_ctrl_server.as_ref() {
     // kaonic
     let listen_addr = cmd.kaonic_ctrl_listen.as_ref()
@@ -119,7 +119,7 @@ async fn main() -> Result<(), process::ExitCode> {
     None
   };
   // mavlink bridge
-  let mut fc = match rns_mavlink::Fc::new(config, radio_client) {
+  let mut fc = match rns_mavlink::Fc::new(config, destination, radio_client) {
     Ok(fc) => fc,
     Err(err) => {
       log::error!("error creating fc bridge: {:?}", err);
