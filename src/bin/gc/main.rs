@@ -105,7 +105,7 @@ async fn main() -> Result<(), process::ExitCode> {
       })?;
     let _ = transport.iface_manager().lock().await.spawn(
       KaonicCtrlInterface::new(radio_client.clone(), config.radio_config.radio_module,
-        None),
+        None, None),
       KaonicCtrlInterface::spawn);
     Some(radio_client)
   } else {
