@@ -96,22 +96,34 @@ impl RadioConfig {
           log::info!("loading radio config from default settings db path: {path:?}");
           Ok(path)
         })?;
-      let connection = rusqlite::Connection::open(path)
+      let connection = rusqlite::Connection::open(&path)
         .map_err(InitRadioClientError::SqliteError)?;
-      let config = connection
-        .query_one("SELECT * FROM settings WHERE key = ?1",
+      let config = match connection
+        .query_row::<String, _, _>("SELECT * FROM settings WHERE key = ?1",
           [format!("kaonic_ctrl_radio_config_{module}")], |row| row.get(1))
-        .map_err(InitRadioClientError::SqliteError)
-        .and_then(|s: String|
-          serde_json::from_str(&s).map_err(InitRadioClientError::JsonParseError)
-        )?;
-      let modulation = connection
-        .query_one("SELECT * FROM settings WHERE key = ?1",
+      {
+        Ok(s) => serde_json::from_str(&s)
+          .map_err(InitRadioClientError::JsonParseError)?,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+          log::warn!("{path} radio config query returned no rows, using default");
+          kaonic_gateway::radio::HardwareRadioConfig::default().module_configs[module]
+            .radio_config
+        }
+        Err(err) => return Err(InitRadioClientError::SqliteError(err))
+      };
+      let modulation = match connection
+        .query_row::<String, _, _>("SELECT * FROM settings WHERE key = ?1",
           [format!("kaonic_ctrl_modulation_{module}")], |row| row.get(1))
-        .map_err(InitRadioClientError::SqliteError)
-        .and_then(|s: String|
-          serde_json::from_str(&s).map_err(InitRadioClientError::JsonParseError)
-        )?;
+      {
+        Ok(s) => serde_json::from_str(&s)
+          .map_err(InitRadioClientError::JsonParseError)?,
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+          log::warn!("{path} radio modulation query returned no rows, using default");
+          kaonic_gateway::radio::HardwareRadioConfig::default().module_configs[module]
+            .modulation
+        }
+        Err(err) => return Err(InitRadioClientError::SqliteError(err))
+      };
       (config, modulation)
     };
     match KaonicCtrlInterface::connect_client::<1400, 5>(
