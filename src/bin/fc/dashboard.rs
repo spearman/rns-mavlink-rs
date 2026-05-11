@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
@@ -13,6 +14,11 @@ use rns_mavlink::fc::{Config, CONFIG_PATH};
 
 const SERVICE_NAME: &str = "rns-mavlink-fc.service";
 
+#[derive(Clone)]
+struct AppState {
+    destination_hash: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct ConfigUpdate {
     config: String,
@@ -23,8 +29,13 @@ struct ConfigResponse {
     config: String,
 }
 
-async fn handler_get_page() -> Html<String> {
-    get_page("RNS-Mavlink FC Dashboard", CONFIG_PATH)
+#[derive(Debug, serde::Serialize)]
+struct DestinationResponse {
+    destination_hash: String,
+}
+
+async fn handler_get_page(State(state): State<AppState>) -> Html<String> {
+    get_page("RNS-Mavlink FC Dashboard", CONFIG_PATH, &state.destination_hash)
 }
 
 async fn handler_get_config() -> impl IntoResponse {
@@ -69,11 +80,18 @@ async fn handler_restart() -> impl IntoResponse {
     }
 }
 
-pub async fn start_server(bind_addr: SocketAddr) -> Result<(), String> {
+async fn handler_get_destination(State(state): State<AppState>) -> impl IntoResponse {
+    (StatusCode::OK, Json(DestinationResponse { destination_hash: state.destination_hash }))
+}
+
+pub async fn start_server(bind_addr: SocketAddr, destination_hash: String) -> Result<(), String> {
+    let state = AppState { destination_hash };
     let app = Router::new()
         .route("/", get(handler_get_page))
         .route("/api/config", get(handler_get_config).put(handler_put_config))
-        .route("/api/restart", post(handler_restart));
+        .route("/api/restart", post(handler_restart))
+        .route("/api/destination", get(handler_get_destination))
+        .with_state(state);
 
     let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
         PLUGIN_TLS_CERT_FILE,

@@ -61,17 +61,6 @@ async fn main() -> Result<(), process::ExitCode> {
     .default_filter_or(&config.log_level)).init();
   log::info!("fc start");
 
-  // launch plugin dashboard
-  if rustls::crypto::CryptoProvider::get_default().is_none() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-  }
-  let http_bind = cmd.http_bind;
-  tokio::spawn(async move {
-    if let Err(err) = dashboard::start_server(http_bind).await {
-      log::error!("dashboard server error: {err}");
-    }
-  });
-
   // start reticulum
   let id = {
     let id_seed = if let Some(id_seed) = cmd.id_seed {
@@ -86,9 +75,10 @@ async fn main() -> Result<(), process::ExitCode> {
   };
   log::info!("starting reticulum with identity: {}", id.address_hash().to_hex_string());
   let mut transport = Transport::new(TransportConfig::new("fc", &id, true));
-  let destination = transport.add_destination(id.clone(),
+  let fc_destination = transport.add_destination(id.clone(),
     DestinationName::new("rns_mavlink", "fc.auth")).await;
-  log::info!("created destination: {}", destination.lock().await.desc.address_hash);
+  let fc_destination_hash = fc_destination.lock().await.desc.address_hash;
+  log::info!("created fc destination: {fc_destination_hash}");
   let radio_client = if let Some(server_addr) = cmd.kaonic_ctrl_server.as_ref() {
     // kaonic
     let listen_addr = cmd.kaonic_ctrl_listen.as_ref()
@@ -118,8 +108,23 @@ async fn main() -> Result<(), process::ExitCode> {
       UdpInterface::spawn);
     None
   };
+
+  // launch plugin dashboard
+  if rustls::crypto::CryptoProvider::get_default().is_none() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+  }
+  let http_bind = cmd.http_bind;
+  tokio::spawn(async move {
+    let s = fc_destination_hash.to_string();
+    if let Err(err) = dashboard::start_server(http_bind, s[1..s.len()-1].to_string())
+      .await
+    {
+      log::error!("dashboard server error: {err}");
+    }
+  });
+
   // mavlink bridge
-  let mut fc = match rns_mavlink::Fc::new(config, destination, radio_client) {
+  let mut fc = match rns_mavlink::Fc::new(config, fc_destination, radio_client) {
     Ok(fc) => fc,
     Err(err) => {
       log::error!("error creating fc bridge: {:?}", err);

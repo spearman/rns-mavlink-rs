@@ -19,7 +19,7 @@ pub fn ok_response(detail: impl Into<String>) -> impl IntoResponse {
     (StatusCode::OK, Json(MessageResponse { detail: detail.into() }))
 }
 
-pub fn get_page(title: &str, config_name: &str) -> Html<String> {
+pub fn get_page(title: &str, config_name: &str, destination_hash: &str) -> Html<String> {
     Html(format!(r#"<!doctype html>
 <html lang="en">
 <head>
@@ -49,6 +49,27 @@ pub fn get_page(title: &str, config_name: &str) -> Html<String> {
     .subtitle {{
       color: #94a3b8;
       margin-bottom: 1.5rem;
+    }}
+    .destination-hash {{
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1.5rem;
+      font-family: "SF Mono", "Consolas", monospace;
+      font-size: 0.9rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }}
+    .destination-hash .label {{
+      color: #94a3b8;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      white-space: nowrap;
+    }}
+    .destination-hash .hash {{
+      color: #22c55e;
+      word-break: break-all;
     }}
     .card {{
       background: #111827;
@@ -152,6 +173,11 @@ pub fn get_page(title: &str, config_name: &str) -> Html<String> {
   <main class="app">
     <h1>{title}</h1>
     <p class="subtitle">Edit the configuration file and save changes. Restart the service to apply.</p>
+
+    <div class="destination-hash">
+      <span class="label">Destination:</span>
+      <span class="hash">{destination_hash}</span>
+    </div>
 
     <div class="card">
       <div class="card-title">{config_name}</div>
@@ -272,5 +298,5 @@ pub fn get_page(title: &str, config_name: &str) -> Html<String> {
   </script>
 </body>
 </html>
-"#, title = title, config_name = config_name))
+"#, title = title, config_name = config_name, destination_hash = destination_hash))
 }

@@ -61,17 +61,6 @@ async fn main() -> Result<(), process::ExitCode> {
     .default_filter_or(&config.log_level)).init();
   log::info!("gc start");
 
-  // launch plugin dashboard
-  if rustls::crypto::CryptoProvider::get_default().is_none() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-  }
-  let http_bind = cmd.http_bind;
-  tokio::spawn(async move {
-    if let Err(err) = dashboard::start_server(http_bind).await {
-      log::error!("dashboard server error: {err}");
-    }
-  });
-
   // start reticulum
   let id = {
     let id_seed = if let Some(id_seed) = cmd.id_seed {
@@ -89,8 +78,8 @@ async fn main() -> Result<(), process::ExitCode> {
   // create destinations
   let data_destination = transport.add_destination(id.clone(),
     DestinationName::new("rns_mavlink", "gc.mavlink_data")).await;
-  log::info!("created data destination: {}",
-    data_destination.lock().await.desc.address_hash);
+  let data_destination_hash = data_destination.lock().await.desc.address_hash;
+  log::info!("created data destination: {data_destination_hash}");
   let radio_client = if let Some(server_addr) = cmd.kaonic_ctrl_server.as_ref() {
     // kaonic
     let listen_addr = cmd.kaonic_ctrl_listen.as_ref()
@@ -120,6 +109,21 @@ async fn main() -> Result<(), process::ExitCode> {
     UdpInterface::spawn);
     None
   };
+
+  // launch plugin dashboard
+  if rustls::crypto::CryptoProvider::get_default().is_none() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+  }
+  let http_bind = cmd.http_bind;
+  tokio::spawn(async move {
+    let s = data_destination_hash.to_string();
+    if let Err(err) =
+      dashboard::start_server(http_bind, s[1..s.len()-1].to_string()).await
+    {
+      log::error!("dashboard server error: {err}");
+    }
+  });
+
   // mavlink bridge
   let gc = rns_mavlink::Gc::new(config, radio_client);
   if let Err(err) = gc.run(transport, data_destination).await {
