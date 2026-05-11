@@ -88,7 +88,7 @@ async fn main() -> Result<(), process::ExitCode> {
   let mut transport = Transport::new(TransportConfig::new("fc", &id, true));
   let destination = transport.add_destination(id.clone(),
     DestinationName::new("rns_mavlink", "fc.auth")).await;
-  log::info!("created destination: {}", destination.lock().await.desc.address_hash);
+  log::info!("created fc destination: {}", destination.lock().await.desc.address_hash);
   let radio_client = if let Some(server_addr) = cmd.kaonic_ctrl_server.as_ref() {
     // kaonic
     let listen_addr = cmd.kaonic_ctrl_listen.as_ref()
